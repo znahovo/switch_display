@@ -149,6 +149,14 @@ func (t *Tray) rebuild() {
 	if t.tray == nil {
 		return
 	}
+	t.tray.SetMenu(t.buildMenu())
+}
+
+// buildMenu 按当前内存状态构造菜单。
+//
+// 与 rebuild 分开是为了能单测菜单结构：这里只碰 *wails.Menu（纯数据结构），
+// 不需要真实的 SystemTray，也不需要 Wails 运行时。
+func (t *Tray) buildMenu() *wails.Menu {
 	snap := t.config.Snapshot()
 	text := labelsFor(snap.Settings.Language)
 
@@ -167,8 +175,11 @@ func (t *Tray) rebuild() {
 	} else {
 		for _, src := range snap.Sources {
 			src := src
-			item := menu.AddRadio(sourceLabel(src), !busy)
+			// AddRadio 的第二个参数是「是否选中」而不是「是否可用」——
+			// 选中态由下面的 SetChecked 决定，这里先占位 false 再由它覆盖。
+			item := menu.AddRadio(sourceLabel(src), false)
 			item.SetChecked(string(src.ID) == current)
+			item.SetEnabled(!busy)
 			applyAccelerator(item, src.Shortcut)
 			item.OnClick(func(*wails.Context) { t.switchTo(string(src.ID), src.Name) })
 		}
@@ -200,7 +211,7 @@ func (t *Tray) rebuild() {
 		}
 	})
 
-	t.tray.SetMenu(menu)
+	return menu
 }
 
 // applyAccelerator 只在真的有快捷键时才设置。

@@ -1,7 +1,7 @@
 # Switch Display — 架构说明（Living Document）
 
 > **本文件是"活文档"**：架构的**唯一事实来源**。需求新增/修改、包结构调整、接口变更、新增依赖，
-> 都必须在同一次改动里同步本文件（见 §11 文档维护约定 + §12 变更日志）。
+> 都必须在同一次改动里同步本文件（见 §12 文档维护约定 + §13 变更日志）。
 >
 > 状态：**设计基线**，代码尚未开始实现（`main.go` 等仍是 Wails 模板）。
 > 每个模块实现后，把 §4 表格里对应行的「状态」改成 ✅。
@@ -119,7 +119,9 @@ switch_display/
 ├── main.go                          # 装配根：建 Wails 应用、装 bootstrap、注册服务、app.Run()
 ├── internal/
 │   ├── bootstrap/
-│   │   └── bootstrap.go             # Build(wailsApp) *App / (*App).Start(ctx) 生命周期
+│   │   ├── bootstrap.go             # Build(wailsApp) *App / (*App).Start(ctx) / AttachWindow
+│   │   └── bootstrap_test.go        # 装配完整性 + 取消的 context 快速失败
+│   │   （e2e_manual_test.go 带 //go:build manual，真机跑一次真实切换）
 │   │
 │   ├── domain/                      # ── 领域层（纯 Go，只 import 标准库） ──
 │   │   ├── display/
@@ -137,11 +139,15 @@ switch_display/
 │   ├── application/                 # ── 应用层（用例 / 编排） ──
 │   │   ├── port.go                  # EventPublisher / HotkeyRegistrar / Clock / Logger + 事件名
 │   │   ├── switchapp/service.go     # SwitchByID 用例（串行化、事件广播）
+│   │   ├── switchapp/service_test.go
 │   │   ├── configapp/service.go     # Load / Save / Export / Import / RebindHotkeys
+│   │   ├── configapp/service_test.go
 │   │   ├── displayapp/service.go    # Refresh / List / Probe + Watcher（热插拔轮询）
+│   │   ├── displayapp/service_test.go
 │   │   └── dto/
 │   │       ├── dto.go               # 面向前端的扁平 DTO
-│   │       └── convert.go           # 领域 ↔ DTO 双向映射
+│   │       ├── convert.go           # 领域 ↔ DTO 双向映射
+│   │       └── convert_test.go
 │   │
 │   ├── infrastructure/              # ── 基础设施层（实现端口） ──
 │   │   ├── ddc/
@@ -153,30 +159,39 @@ switch_display/
 │   │   │   │   ├── darwin.go        # cgo 声明 + Port 实现（唯一 import "C" 的地方）
 │   │   │   │   ├── i2c.h / i2c.m    # IOAVServiceRead/WriteI2C、DDC/CI 帧拼装
 │   │   │   │   ├── registry.h/.m    # IORegistry 枚举 DCPAVServiceProxy / 匹配 framebuffer
-│   │   │   │   └── port_test.go     # 烟雾测试（枚举/读回不崩）
+│   │   │   │   ├── port_test.go     # 烟雾测试（枚举/读回不崩，需真显示器）
+│   │   │   └── branches_test.go # 取消/未知显示器/不支持 等不碰硬件的分支
 │   │   │   ├── windows/stub.go      # 返回 display.ErrUnsupported（后续 Dxva2）
 │   │   │   └── linux/stub.go        # 返回 display.ErrUnsupported（后续 i2c-dev）
 │   │   ├── persistence/
 │   │   │   ├── jsonstore.go         # source.Repository 实现：原子写 + .bak + fsync + 导入导出
 │   │   │   ├── migrate.go           # 配置版本迁移 + 默认值补齐
 │   │   │   ├── paths.go             # os.UserConfigDir()/switch-display/config.json
-│   │   │   └── jsonstore_test.go    # 7 个用例（往返/备份/坏文件/导入导出）
+│   │   │   ├── jsonstore_test.go    # 往返/备份/坏文件/导入导出
+│   │   │   └── migrate_test.go      # 版本迁移 + 默认值 + context 取消
 │   │   └── platform/                # 端口 → Wails/系统 的薄转发
 │   │       ├── events.go            # EventPublisher → Wails app.Event.Emit
 │   │       ├── hotkey.go            # HotkeyRegistrar → Wails GlobalShortcut
 │   │       ├── clock.go             # Clock → time.Now / 可取消 timer
 │   │       ├── logging.go           # Logger → log/slog
-│   │       └── errors.go
+│   │       ├── errors.go
+│   │       ├── platform_test.go      # Logger / Clock / 错误文案
+│   │       └── hotkey_test.go        # 无 Wails 运行时时的降级分支
 │   │
 │   ├── presentation/                # ── 表现层（Wails 绑定 + 托盘） ──
 │   │   ├── wailsservice/
 │   │   │   ├── service.go           # DisplayService：薄适配，只做 DTO 映射与启动钩子
-│   │   │   └── errors.go            # 领域错误 → 稳定 error code（前端 i18n 用）
+│   │   │   ├── errors.go            # 领域错误 → 稳定 error code（前端 i18n 用）
+│   │   │   ├── service_test.go      # 端到端接线（fake Port + 临时配置目录）
+│   │   │   ├── service_extra_test.go# 警告一次性消费 / 导入导出 / 错误映射
+│   │   │   └── errors_test.go       # 错误码映射表（对外契约）
 │   │   └── tray/
 │   │       ├── tray.go              # SystemTray：菜单全量重建、打勾、点击转发、关窗隐藏
 │   │       ├── labels.go            # 托盘菜单文案（原生菜单拿不到 vue-i18n，自己一份）
 │   │       ├── assets/icon.png      # 44×44 黑/透明 template icon（go:embed）
-│   │       └── tray_test.go         # 文案选择 / 端口标签 的单测
+│   │       ├── tray_test.go         # 菜单结构（顺序/Radio/打勾/禁用/语言）
+│   │       ├── switch_test.go       # busy 串行、失败不挪打勾、读回纠正打勾
+│   │       └── labels_test.go       # 中英文案 + 区域兜底
 │   │
 │   └── (已删除) greetservice.go
 │
@@ -222,7 +237,7 @@ switch_display/
 
 ## 5. 关键接口契约
 
-> 接口定义在使用方；下面的签名是**契约**，改动必须同步本文件并记入 §12 变更日志。
+> 接口定义在使用方；下面的签名是**契约**，改动必须同步本文件并记入 §13 变更日志。
 
 ```go
 // ── internal/domain/display/port.go ──────────────────────────────
@@ -495,7 +510,7 @@ flowchart TB
 - **并发**：`Snapshot` 由 `configapp` 用 `sync.RWMutex` 保护；DDC 读写**串行化**（一个 `sync.Mutex` 在 ddc 实现内，因为 I2C 通道不并发安全）。切换操作加"进行中"标志，第二次点击直接返回"正在切换"。
 - **cgo 边界**：C 只负责"帧拼装 + IOAVService 调用"，**不持有 Go 指针**、不回调 Go、不做内存分配（用调用方传入的 `C.malloc` / 固定 `[]C.uint8_t`）。C 返回错误码，Go 侧翻译。
 - **日志**：`Logger` 端口注入（v1 用标准库 `log/slog` 文本 handler；debug 开关在设置页）。
-- **可测试性**：domain/application 全部用 fake 端口单测；`infrastructure/ddc` 有一个 `//go:build ddc_integration` 的集成测试，只在真机上跑。
+- **可测试性**：见 §11「测试策略」。一句话规则——**用例层只依赖端口，测试里全用 fake；真实的 DDC 只在真机上跑。**
 
 ---
 
@@ -513,13 +528,41 @@ flowchart TB
 
 ---
 
-## 11. 文档维护约定（必须遵守）
+## 11. 测试策略
+
+只写后端 Go 测试（前端不写单测，靠真机验收）。分层策略如下：
+
+| 层 | 测什么 | 怎么测 | 依赖 |
+|---|---|---|---|
+| `domain/*` | 不变量、状态判定、预设表 | 纯函数直调，无 fake | 无 |
+| `application/*app` | 编排顺序、事件、警告、并发串行 | 手写 fake 端口（`display.Port` / `Repository` / `HotkeyRegistrar` / `Clock` / `Logger`） | 无 Wails |
+| `application/dto` | 领域 ↔ DTO 映射、`json` tag 稳定性 | 往返断言 | 无 |
+| `infrastructure/persistence` | 原子写、备份、迁移、context 取消 | `t.TempDir()` 真文件 | 无 |
+| `infrastructure/platform` | Logger 兜底、Clock 可取消、无运行时降级 | 直调；hotkey 只测「无 Wails 时返回 unsupported」分支 | 无 |
+| `presentation/wailsservice` | DTO 接线、错误码映射、警告一次性消费 | 同一套 fake + 临时配置目录，**不启动 Wails** | 无 |
+| `presentation/tray` | 菜单结构（顺序 / Radio / 打勾 / 禁用）、busy 串行、读回纠正 | `buildMenu()` 返回 `*wails.Menu`（纯数据结构，不需运行时） | 无 |
+| `infrastructure/ddc/darwin` | 取消、未知显示器、真实读回 | 不碰硬件的分支 + 真机烟雾测试 | 真机（有则跑，无则 skip） |
+| `bootstrap` | 装配完整性、失败快速返回 | `wails.New` 但不 `Run` | 无 |
+
+约定：
+
+1. **`test` 不能依赖 Wails 运行时**。需要菜单/事件的地方，都从真实对象里抽出纯数据构造（如 `Tray.buildMenu()` 返回 `*wails.Menu`），而不是启动 app。
+2. **fake clock 必须返回 `context.Canceled` 而不是 `ctx.Err()`**：未取消的 ctx 上 `ctx.Err()` 是 nil，`Watcher.Run` 会无限循环把 `go test` 挂死。
+3. **不要泄漏内部切片**：`Snapshot()` / `List()` / `Refresh()` 都返回副本，测试里改返回值后要断言源对象没变。
+4. **区域相关的用例要 `t.Setenv`**：托盘文案按 `LC_ALL/LC_MESSAGES/LANG` 兜底，不定住就是环境依赖测试。
+5. 真机集成测试（会真的切屏幕）单独打 tag：`go test ./internal/bootstrap/ -tags manual -run TestSwitchToCurrentPort -v`。
+
+跑法：`go test ./internal/... -cover`、`go vet ./internal/... .`、`gofmt -l internal/ main.go`。
+
+---
+
+## 12. 文档维护约定（必须遵守）
 
 **每次"写需求"或"改代码"的提交，都要检查本文件是否需要同步。** 检查清单：
 
-1. **需求新增/变更** → `docs/plan.md` 增加/修改章节，并把本文件 §4 状态列、§7 流程、§10 ADR 对齐；在 §12 记一条变更。
+1. **需求新增/变更** → `docs/plan.md` 增加/修改章节，并把本文件 §4 状态列、§7 流程、§10 ADR 对齐；在 §13 记一条变更。
 2. **新增/移动/删除包** → 更新 §3 目录树（保持与仓库实际一致）。
-3. **接口签名变化**（§5）→ 直接改代码块，并在 §12 记一条。
+3. **接口签名变化**（§5）→ 直接改代码块，并在 §13 记一条。
 4. **新增端口/事件/持久化字段** → 更新 §5 / §7 / plan.md §4 数据模型。
 5. **引入新依赖**（Go 或 npm）→ 更新 plan.md §10 依赖清单，并在此说明用途。
 6. **跨平台行为差异** → 更新 §4 表格中对应平台行。
@@ -542,7 +585,7 @@ flowchart TB
 
 ---
 
-## 12. 变更日志
+## 13. 变更日志
 
 | 日期 | 变更 | 影响面 |
 |---|---|---|
@@ -553,3 +596,4 @@ flowchart TB
 | 2026-10-25 | 补 `presentation/wailsservice` 的接线测试（5 个用例：State/Save/重复端口/Switch/ReadCurrentInput），用 fake Port + 临时目录跑通整条 application→presentation 链路，不需要 Wails 运行时 | presentation/wailsservice |
 | 2026-10-26 | **第二步落地**：`presentation/tray`（SystemTray + template icon + 全量重建菜单 + Radio 打勾 + 「切回本机」+ 「设置…」/「重新检测」/「退出」+ 关窗隐藏）、`Settings.SelfSourceID`（存源 ID 而非端口值，改端口后「切回本机」自动跟随）、前端三页 + hash 路由（`vue-router` 5.4.0）、`lib/accelerator.ts`（用 `event.code` 录制，避免 Option 组合键变成特殊字符）、i18n 补齐 settings/sources 文案 | 代码 + docs |
 | 2026-10-25 | **与 m1ddc 的行为差异（重要）**：读请求的校验和必须包含 `inputAddress` —— `request[3] = 0x6E ^ addr ^ request[0] ^ request[1] ^ request[2]`。m1ddc 的 `prepareDDCRead()` 漏了 addr，导致本机 Mi Monitor 读回纯噪声（`get contrast` 得到 50739）。修正后回复帧规整（亮度/对比度 cur≤max，输入源 cur=18）。此差异记录在 `internal/infrastructure/ddc/darwin/i2c.m` 注释中 | infrastructure/ddc |
+| 2026-10-26 | **补齐后端 Go 单测并新增 §11 测试策略**：14 个包全部有用例（新增/扩写 `domain/display`、`application/{dto,configapp,displayapp,switchapp}`、`infrastructure/{ddc,ddc/darwin(branches),persistence(migrate),platform(+hotkey)}`、`presentation/{tray(+switch,+labels),wailsservice(+extra,+errors)}`、`bootstrap`）。覆盖 0% → 100% 的包 3 个（display / ddc / bootstrap），tray 10%→70%、wailsservice 53%→96%。测试暴露并修掉两个真 bug：① `tray.AddRadio(label, busy)` 第二参是 checked 不是 enabled（busy 时源项没被禁用）；② `displayapp.Refresh` 返回内部切片（调用方改名会污染缓存）。新增 §11 记录分层测试策略与 5 条约定（fake clock 必须返回 `context.Canceled` 等），原 §11/§12 顺延为 §12/§13 | 全部测试 + docs |

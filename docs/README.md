@@ -9,7 +9,7 @@
 
 1. **改需求** → 改 `plan.md`，并同步 `architecture.md` 的 §4 状态 / §7 流程 / §10 ADR。
 2. **改结构**（加/移/删包、改接口签名、加端口或事件、加依赖） → 必须改 `architecture.md` 的对应章节。
-3. **每次改完** → 在 `architecture.md` §12「变更日志」追加一行（日期 + 变更 + 影响面）。
+3. **每次改完** → 在 `architecture.md` §13「变更日志」追加一行（日期 + 变更 + 影响面）。
 4. **流程图/时序图/分层图用 Mermaid**（` ```mermaid `）；**目录结构树用 ASCII 树**。
    渲染自检：`npx @mermaid-js/mermaid-cli -i <file.mmd> -o /tmp/x.png`（本机已装可用）。
 5. `architecture.md` 是**唯一**描述架构的地方；代码注释只写"为什么这样实现"，不重复讲分层。

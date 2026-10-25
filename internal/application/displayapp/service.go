@@ -54,7 +54,9 @@ func (s *Service) Refresh(ctx context.Context) ([]display.Display, error) {
 	s.mu.Unlock()
 
 	s.log.Info("displays refreshed", "count", len(list))
-	return list, nil
+	// 返回副本：调用方（List 未命中缓存的路径）会把它直接交给上层，
+	// 泄漏内部切片会让某处改名字后缓存跟着变。
+	return append([]display.Display(nil), list...), nil
 }
 
 // refreshQuiet 与 Refresh 相同但不打日志。

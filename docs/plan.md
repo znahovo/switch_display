@@ -361,7 +361,7 @@ flowchart LR
 - **并发**：DDC 访问在适配器内用 `sync.Mutex` 串行化；配置用 `RWMutex`；切换操作有"进行中"标志防重入。
 - **测试**：domain/application 用 fake 端口单测（含 fake clock）；真机 DDC 用 `//go:build ddc_integration` 隔离。
 - **注释**：解释"为什么"不解释"是什么"；架构级决策写进 `architecture.md` 的 ADR，不散落在代码里。
-- **文档同步**：任何需求变更/接口变更/新依赖/新包，同一提交内更新 `docs/architecture.md`（检查清单见其 §11）与本文档。
+- **文档同步**：任何需求变更/接口变更/新依赖/新包，同一提交内更新 `docs/architecture.md`（检查清单见其 §12）与本文档。
 - **图表**：流程图/时序图/分层图用 **Mermaid**；目录结构树用 ASCII 树（见 architecture.md §3）；节点名与代码包名保持一致。
 
 ---
@@ -371,7 +371,7 @@ flowchart LR
 按「先领域、后基础设施、最后表现层」推进，每一步都能编译 + 独立验证：
 
 1. **清理模板**（✅）：删 `greetservice.go`、`HelloWorld.vue`、霓虹样式；`go.mod` 改模块名 `github.com/znahovo/switch-display`；`main.go` 精简为装配根。
-2. **建立 `docs/architecture.md` 基线**（✅ 已完成），之后每次提交按 architecture.md §11 的清单同步。
+2. **建立 `docs/architecture.md` 基线**（✅ 已完成），之后每次提交按 architecture.md §12 的清单同步。
 3. **domain/display + domain/source**（✅ 含单测）：纯 Go 聚合、值对象、不变量、端口接口、哨兵错误；单测全覆盖（无 cgo、无 GUI）。
 4. **domain/switching**（✅ 含单测）：重试/确认窗口/四态判定；用 fake `Clock` + fake `Port` 单测（覆盖 confirmed / mismatch / unconfirmed / failed）。
 5. **infrastructure/ddc/darwin**（✅ 已跑通本机 Mi Monitor）：cgo + `.m`（`IOAVServiceRead/WriteI2C`、IORegistry 枚举），实现 `display.Port`；`//go:build ddc_integration` 集成测试先跑通「列出 Mi Monitor」「读 0x10」「写 0x60」；同时放 `windows/stub.go`、`linux/stub.go` + `new_*.go` 工厂（保证交叉编译不炸）。
