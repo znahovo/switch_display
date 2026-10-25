@@ -21,6 +21,11 @@ type Settings struct {
 	DefaultConfirmMs int
 	// HideToTrayOnClose 关闭窗口时隐藏到菜单栏而不是退出。
 	HideToTrayOnClose bool
+	// SelfSourceID 是「本机自己所在的那个输入口」对应的信号源 ID。
+	//
+	// 为什么需要：切走之后这块屏幕就没有画面了，用户很可能需要一键切回。
+	// 空串表示用户还没标记，此时托盘不显示「切回本机」。
+	SelfSourceID string
 }
 
 // DefaultSettings 返回首次运行时的设置。
@@ -98,6 +103,14 @@ func (s Snapshot) Validate() error {
 			return fmt.Errorf("%w: %q and %q both target %s", ErrDuplicatePort, prev, src.Name, src.Input)
 		}
 		ports[key] = src.ID
+	}
+
+	// SelfSourceID 必须指向一个真实存在的源，否则托盘的「切回本机」会指向空气。
+	// 允许为空：用户还没标记哪台机器是「本机」。
+	if id := s.Settings.SelfSourceID; id != "" {
+		if _, ok := ids[ID(id)]; !ok {
+			return fmt.Errorf("self source %q does not exist", id)
+		}
 	}
 	return nil
 }

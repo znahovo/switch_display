@@ -30,6 +30,10 @@ export const EventName = {
   switchStarted: "switch:started",
   switchFinished: "switch:finished",
   stateChanged: "state:changed",
+  /** 托盘「设置…」被点击：前端要跳到设置页 */
+  openSettings: "dialogs:open-settings",
+  /** 后端要求前端切到某个页面，payload 是路由路径（如 "/settings"） */
+  showView: "ui:show-view",
 } as const
 
 /** 后端返回的结构化错误（见 internal/presentation/wailsservice/errors.go）。 */

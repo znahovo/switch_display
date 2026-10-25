@@ -36,7 +36,8 @@ func main() {
 	}
 	app.RegisterService(wails.NewService(wire.DisplayService))
 
-	app.Window.NewWithOptions(wails.WebviewWindowOptions{
+	win := app.Window.NewWithOptions(wails.WebviewWindowOptions{
+		Name:   "main",
 		Title:  "Switch Display",
 		Width:  880,
 		Height: 620,
@@ -48,6 +49,9 @@ func main() {
 		BackgroundColour: wails.NewRGBA(0, 0, 0, 0),
 		URL:              "/",
 	})
+
+	// 把窗口交给托盘，并安装「关窗口 = 收进菜单栏」的拦截。
+	wire.AttachWindow(win)
 
 	if err := app.Run(); err != nil {
 		log.Fatal(err)

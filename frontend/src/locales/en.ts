@@ -6,6 +6,7 @@ export default {
   nav: {
     switcher: "Switcher",
     sources: "Sources",
+    settings: "Settings",
   },
   common: {
     retry: "Retry",

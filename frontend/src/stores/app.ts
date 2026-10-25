@@ -14,6 +14,7 @@ export const useAppStore = defineStore("app", () => {
     confirmAfterSwitch: true,
     defaultConfirmMs: 1200,
     hideToTrayOnClose: true,
+    selfSourceId: "",
   })
   const configPath = ref("")
   const warnings = ref<string[]>([])
@@ -134,6 +135,33 @@ export const useAppStore = defineStore("app", () => {
     }
   }
 
+  /** exportTo 把当前配置写到用户选的位置。 */
+  async function exportTo(dest: string) {
+    await api.exportConfig(dest)
+  }
+
+  /**
+   * importFrom 读入外部配置并立即落盘。
+   *
+   * 后端 Import 只解析不保存（两步确认的第二步），这里紧接着 save，
+   * 因为用户已经通过文件选择器明确表达了「就用这个」。
+   */
+  async function importFrom(src: string): Promise<StateDTO> {
+    const state = await api.importConfig(src)
+    const res = await api.saveConfig({
+      displays: displays.value,
+      sources: state.sources ?? [],
+      settings: state.settings,
+      configPath: configPath.value,
+      warnings: [],
+    })
+    if (!res.ok) {
+      throw new Error((res.warnings ?? []).join("; ") || "import failed")
+    }
+    await refresh()
+    return state
+  }
+
   /** errorText 把后端 code 翻成当前语言的文案。 */
   function errorText(t: (key: string) => string): string {
     const e = error.value
@@ -164,6 +192,8 @@ export const useAppStore = defineStore("app", () => {
     loadPresets,
     switchTo,
     save,
+    exportTo,
+    importFrom,
     errorText,
   }
 })

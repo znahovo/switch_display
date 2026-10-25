@@ -48,4 +48,8 @@ const (
 	EventSwitchFinished = "switch:finished"
 	// EventStateChanged 在配置或设备状态变化时发出，payload 为 StateDTO。
 	EventStateChanged = "state:changed"
+	// EventOpenSettings 由托盘「设置…」发出，前端收到后跳到设置页。
+	EventOpenSettings = "dialogs:open-settings"
+	// EventShowView 请求前端显示某个视图，payload 为视图名（"switcher"/"sources"/"settings"）。
+	EventShowView = "ui:show-view"
 )

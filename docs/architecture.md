@@ -172,7 +172,11 @@ switch_display/
 │   │   ├── wailsservice/
 │   │   │   ├── service.go           # DisplayService：薄适配，只做 DTO 映射与启动钩子
 │   │   │   └── errors.go            # 领域错误 → 稳定 error code（前端 i18n 用）
-│   │   └── tray/                    # （第二步）菜单构建/重建、图标、点击路由
+│   │   └── tray/
+│   │       ├── tray.go              # SystemTray：菜单全量重建、打勾、点击转发、关窗隐藏
+│   │       ├── labels.go            # 托盘菜单文案（原生菜单拿不到 vue-i18n，自己一份）
+│   │       ├── assets/icon.png      # 44×44 黑/透明 template icon（go:embed）
+│   │       └── tray_test.go         # 文案选择 / 端口标签 的单测
 │   │
 │   └── (已删除) greetservice.go
 │
@@ -180,10 +184,17 @@ switch_display/
 │   └── src/
 │       ├── api/index.ts             # 包一层 bindings：组件不直接调 $Call
 │       ├── stores/app.ts            # Pinia：显示器 + 信号源 + 设置（单一 store）
-│       ├── views/SwitcherView.vue   # 第一步唯一的页面
+│       ├── router/index.ts          # hash 路由：/ /sources /settings（ADR-006）
+│       ├── views/
+│       │   ├── SwitcherView.vue     # 切换台：点卡片即切
+│       │   ├── SourcesView.vue      # 信号源增删改 + 快捷键录制（整体提交）
+│       │   └── SettingsView.vue     # 语言 / 关窗隐藏 / 读回确认 / 本机源 / 导入导出
 │       ├── components/              # ui/（Button/Card/Input/Label/Select）+ SourceCard.vue
 │       ├── locales/                 # i18n 骨架（en / zh-CN）
-│       └── lib/utils.ts             # cn()
+│       └── lib/
+│           ├── utils.ts             # cn()
+│           ├── theme.ts             # 跟随系统 light/dark
+│           └── accelerator.ts       # KeyboardEvent.code → accelerator 字符串 + ⌘⌥1 显示
 └── docs/
     ├── plan.md                      # 需求与实施方案（会随需求演进）
     ├── architecture.md              # ← 本文件：架构唯一事实来源
@@ -202,10 +213,10 @@ switch_display/
 | `application` | 用例编排与事务边界（一次保存 = 一次完整持久化 + 快捷键重建）、DTO 组装 | 不含业务规则判定 | ✅ 第一步 |
 | `infrastructure/ddc` | 用 macOS IOKit/IOAVService 真正读写 DDC/CI；Windows/Linux 桩 | 不决定"切哪个源" | ✅ darwin / ⬜ win+linux 桩已就位 |
 | `infrastructure/persistence` | JSON 文件读写、原子替换、备份、版本迁移、路径解析 | 不校验业务规则（交由 domain） | ✅ 第一步 |
-| `infrastructure/platform` | Wails 事件/全局快捷键/时钟/日志 | 不含菜单结构定义 | ✅ 第一步（托盘第二步） |
+| `infrastructure/platform` | Wails 事件/全局快捷键/时钟/日志 | 不含菜单结构定义 | ✅ 第一步 |
 | `presentation/wailsservice` | 暴露给前端的 API、DTO 映射、错误 code | 不含流程控制 | ✅ 第一步 |
-| `presentation/tray` | 菜单结构、图标、当前源打勾、点击转发 | 不直接调 ddc | ⬜ 第二步 |
-| `bootstrap` | 装配、生命周期、热插拔轮询 | 不写业务分支 | ✅ 第一步 |
+| `presentation/tray` | 菜单结构、图标、当前源打勾、点击转发、关窗隐藏 | 不直接调 ddc | ✅ 第二步 |
+| `bootstrap` | 装配、生命周期、热插拔轮询、关窗拦截接线 | 不写业务分支 | ✅ 第二步 |
 
 ---
 
@@ -269,6 +280,8 @@ const (
     EventSwitchStarted  = "switch:started"
     EventSwitchFinished = "switch:finished"
     EventStateChanged   = "state:changed"
+    EventOpenSettings   = "dialogs:open-settings"  // 托盘「设置…」→ 前端跳设置页
+    EventShowView       = "ui:show-view"           // payload: 目标路由路径
 )
 ```
 
@@ -277,7 +290,8 @@ const (
 ```jsonc
 {
   "version": 1,
-  "settings": { "language": "", "confirmAfterSwitch": true, "defaultConfirmMs": 1200, "hideToTrayOnClose": true },
+  "settings": { "language": "", "confirmAfterSwitch": true, "defaultConfirmMs": 1200,
+                "hideToTrayOnClose": true, "selfSourceId": "" },
   "sources": [
     { "id": "src-1a2b3c4d", "name": "工作 PC", "color": "#3b82f6",
       "displayId": "7E4E3972-…", "input": { "vcp": 96, "value": 17, "alt": false },
@@ -304,7 +318,7 @@ const (
 | 对象 | 不变量 |
 |---|---|
 | `SignalSource` | `Name` trim 后非空、≤32 字符；`Color` 匹配 `^#[0-9a-fA-F]{6}$`；`ConfirmMs ∈ [0, 10000]`（0 = 不确认） |
-| `Snapshot` | `Shortcut` 跨源唯一（空串不算）；`(DisplayID, VCP, Value, Alt)` 组合唯一（防止两个源抢同一个口）；`Version ≥ 1` |
+| `Snapshot` | `Shortcut` 跨源唯一（空串不算）；`(DisplayID, VCP, Value, Alt)` 组合唯一（防止两个源抢同一个口）；`SelfSourceID` 非空时必须指向已存在的源；`Version ≥ 1` |
 | `SignalSource` | 引用的 `DisplayID` 必须来自当前枚举结果（保存时由 application 校验，不在 domain 内查硬件） |
 
 **领域服务** `switching.Service`：
@@ -537,4 +551,5 @@ flowchart TB
 | 2026-10-25 | 所有结构图改为 **Mermaid**：§2 分层依赖图（flowchart + 颜色分层）、§7.1 切换时序图 + Outcome 判定流程图、§7.2 保存时序图、§7.3 启动装配图；新增"图表约定"（禁字符画） | docs（architecture.md / plan.md / README.md） |
 | 2026-10-25 | **第一步代码落地**：domain（display/source/switching）+ darwin DDC 端口 + persistence + application（switchapp/configapp/displayapp + dto）+ platform 适配 + wailsservice + bootstrap + main.go + 前端骨架（Tailwind v4 / Pinia / vue-i18n / 极简切换台）。§3 目录树、§4 状态列按实际实现更新；`docs/plan.md` §12 步骤 1/3/4/5/6/7/8/9/10 标记完成 | 代码 + docs |
 | 2026-10-25 | 补 `presentation/wailsservice` 的接线测试（5 个用例：State/Save/重复端口/Switch/ReadCurrentInput），用 fake Port + 临时目录跑通整条 application→presentation 链路，不需要 Wails 运行时 | presentation/wailsservice |
+| 2026-10-26 | **第二步落地**：`presentation/tray`（SystemTray + template icon + 全量重建菜单 + Radio 打勾 + 「切回本机」+ 「设置…」/「重新检测」/「退出」+ 关窗隐藏）、`Settings.SelfSourceID`（存源 ID 而非端口值，改端口后「切回本机」自动跟随）、前端三页 + hash 路由（`vue-router` 5.4.0）、`lib/accelerator.ts`（用 `event.code` 录制，避免 Option 组合键变成特殊字符）、i18n 补齐 settings/sources 文案 | 代码 + docs |
 | 2026-10-25 | **与 m1ddc 的行为差异（重要）**：读请求的校验和必须包含 `inputAddress` —— `request[3] = 0x6E ^ addr ^ request[0] ^ request[1] ^ request[2]`。m1ddc 的 `prepareDDCRead()` 漏了 addr，导致本机 Mi Monitor 读回纯噪声（`get contrast` 得到 50739）。修正后回复帧规整（亮度/对比度 cur≤max，输入源 cur=18）。此差异记录在 `internal/infrastructure/ddc/darwin/i2c.m` 注释中 | infrastructure/ddc |

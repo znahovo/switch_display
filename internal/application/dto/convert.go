@@ -89,6 +89,7 @@ func FromSettings(s source.Settings) SettingsDTO {
 		ConfirmAfterSwitch: s.ConfirmAfterSwitch,
 		DefaultConfirmMs:   s.DefaultConfirmMs,
 		HideToTrayOnClose:  s.HideToTrayOnClose,
+		SelfSourceID:       s.SelfSourceID,
 	}
 }
 
@@ -99,6 +100,7 @@ func ToSettings(s SettingsDTO) source.Settings {
 		ConfirmAfterSwitch: s.ConfirmAfterSwitch,
 		DefaultConfirmMs:   s.DefaultConfirmMs,
 		HideToTrayOnClose:  s.HideToTrayOnClose,
+		SelfSourceID:       s.SelfSourceID,
 	}
 }
 

@@ -179,6 +179,7 @@ type wireSettings struct {
 	ConfirmAfterSwitch bool   `json:"confirmAfterSwitch"`
 	DefaultConfirmMs   int    `json:"defaultConfirmMs"`
 	HideToTrayOnClose  bool   `json:"hideToTrayOnClose"`
+	SelfSourceID       string `json:"selfSourceId,omitempty"`
 }
 
 type wireSource struct {
@@ -205,6 +206,7 @@ func fromDomain(s source.Snapshot) wireSnapshot {
 			ConfirmAfterSwitch: s.Settings.ConfirmAfterSwitch,
 			DefaultConfirmMs:   s.Settings.DefaultConfirmMs,
 			HideToTrayOnClose:  s.Settings.HideToTrayOnClose,
+			SelfSourceID:       s.Settings.SelfSourceID,
 		},
 		Sources: make([]wireSource, 0, len(s.Sources)),
 	}
@@ -239,6 +241,7 @@ func (w wireSnapshot) toDomain() (source.Snapshot, error) {
 			ConfirmAfterSwitch: migrated.Settings.ConfirmAfterSwitch,
 			DefaultConfirmMs:   migrated.Settings.DefaultConfirmMs,
 			HideToTrayOnClose:  migrated.Settings.HideToTrayOnClose,
+			SelfSourceID:       migrated.Settings.SelfSourceID,
 		},
 		Sources: make([]source.SignalSource, 0, len(migrated.Sources)),
 	}

@@ -43,6 +43,10 @@ type SettingsDTO struct {
 	ConfirmAfterSwitch bool   `json:"confirmAfterSwitch"`
 	DefaultConfirmMs   int    `json:"defaultConfirmMs"`
 	HideToTrayOnClose  bool   `json:"hideToTrayOnClose"`
+	// SelfSourceID 是「本机」对应的信号源 ID；空串表示未标记。
+	// 「切回本机」菜单项与设置页都靠它；不存端口值本身而存源 ID，
+	// 这样用户改源端口时「本机」会跟着变。
+	SelfSourceID string `json:"selfSourceId"`
 }
 
 // StateDTO 是前端一次渲染所需的全部状态。

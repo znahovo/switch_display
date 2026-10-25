@@ -263,6 +263,7 @@ LG alternate（VCP 0xF4，chip address 0x50）：DP1=208、DP2=209、HDMI1=144�
 | 11 | 退出 | 普通项 | `app.Quit()` |
 
 - 第 3–5 项用 `AddRadio` 表示当前输入源（**读回可用**时以读回为准，否则以最近一次点击的乐观态为准）
+- 第 7 项「切回本机」的绑定存在 `settings.selfSourceId`（**存信号源 ID 而不是端口值**：用户改源端口时它会自动跟随，不会指向过期端口）；为空时整项不显示
 - 关窗口 = 隐藏到后台（`MacOptions.ApplicationShouldTerminateAfterLastWindowClosed = false` + 窗口关闭拦截 `Hide()`）
 - 菜单栏「退出」才真退
 
@@ -376,9 +377,9 @@ flowchart LR
 5. **infrastructure/ddc/darwin**（✅ 已跑通本机 Mi Monitor）：cgo + `.m`（`IOAVServiceRead/WriteI2C`、IORegistry 枚举），实现 `display.Port`；`//go:build ddc_integration` 集成测试先跑通「列出 Mi Monitor」「读 0x10」「写 0x60」；同时放 `windows/stub.go`、`linux/stub.go` + `new_*.go` 工厂（保证交叉编译不炸）。
 6. **infrastructure/persistence**（✅ 含单测）：JSON 原子写 + `.bak` + 迁移 + 路径；临时目录单测。
 7. **application**（✅）：`switchapp` / `configapp` / `displayapp` + `dto`；用 fake 端口单测。
-8. **infrastructure/platform + presentation**（✅ 除 tray）：快捷键/事件适配、`wailsservice`、`tray`；`wails3 generate bindings` 确认 TS 类型。
-9. **bootstrap + main.go** 装配（✅ 能跑、能切换；托盘留第二步）。
-10. **前端**（第一步 ✅ 极简版）：Tailwind v4 + shadcn 风格组件 + Pinia + vue-i18n + 单页切换台；三页面/快捷键录制留第二步。
+8. **infrastructure/platform + presentation**（✅ 第二步完成 tray）：快捷键/事件适配、`wailsservice`、`tray`（SystemTray + template icon + 全量重建菜单 + Radio 打勾 + 关窗隐藏）；`wails3 generate bindings` 确认 TS 类型。
+9. **bootstrap + main.go** 装配（✅ 第二步完成托盘接线与关窗拦截）。
+10. **前端**（✅ 第二步完成三页）：Tailwind v4 + shadcn 风格组件 + Pinia + vue-i18n + hash 路由（切换台 / 信号源 / 设置）+ 快捷键录制。
 11. **打磨**：空状态、错误文案、i18n 骨架、README、`wails3 build` 出 app；同步 `docs/architecture.md` 的状态列。
 
 ---
