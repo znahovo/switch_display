@@ -1,0 +1,405 @@
+# Switch Display — 实施方案（Plan）
+
+> 状态：**待评审**。这份文档是给用户确认需求用的，确认后再开始写代码。
+> 项目：`/Users/nnn/Documents/code/gowails/switch_display`（Wails v3 beta.34 + Vue 3 + TS，当前是模板工程）
+
+---
+
+## 1. 目标
+
+一台外接显示器同时接了多个系统（Mac mini / Windows 主机 / 游戏机 / 另一台笔记本），
+显示器通过 DDC/CI 的 **VCP 0x60（Input Source）** 切换输入口。
+做一个 macOS 菜单栏常驻的小工具：
+
+- 列出**已配置的信号源**（比如「Mac」「工作 PC」「PS5」），点一下就把显示器切到它对应的输入口；
+- 支持**菜单栏快速切换** + **每源一个全局快捷键**；
+- 尽量**读回当前输入源并高亮**（best-effort，很多显示器不支持读，见 §7）。
+
+不做的事：不做通用显示器控制面板（亮度/对比度/音量）—— 后续可作为附加页。
+不做多显示器矩阵（数据模型预留，见 §4）。
+
+---
+
+## 2. 现状与已完成的可行性验证
+
+在本机（Apple M6，macOS 27.0.1，CLT 已装，`Mi Monitor`）上已实测：
+
+| 项 | 结果 |
+|---|---|
+| `m1ddc` 从源码 `make` | ✅ 编译通过 |
+| `m1ddc display list detailed` | ✅ 能枚举显示器：System UUID `7E4E3972-…`、EDID `61A9B127-…`、Vendor `0x61a9`、Model `0x27b1`、Adapter、IO Location |
+| `m1ddc set contrast 50` | ✅ DDC 写成功 |
+| **Go + cgo 直接调 `IOAVServiceWriteI2C`** | ✅ 返回 0（不需要依赖外部 m1ddc 二进制） |
+| Go + cgo 读 VCP 0x10/0x12 | ✅ `0x10` 亮度 cur=100/max=100，`0x12` 对比度 cur=50/max=100 |
+| Go + cgo 读 VCP 0x60（输入源） | ⚠️ 返回 `cur=18 max=14`，**当前高亮值不可靠**（该显示器/该链路不支持读 input，或返回被截断）。所以 UI 必须能优雅降级。 |
+| cgo 编译 `.m` Objective-C 文件 | ✅ 已验证 `#cgo CFLAGS: -fmodules` + `.m` 与 Go 同包编译可行 |
+
+**→ 结论：内置 cgo 实现，用户不需要额外安装任何东西。** 这是你选的方案。
+
+技术来源：移植 [waydabber/m1ddc](https://github.com/waydabber/m1ddc)（MIT）的 `i2c.m` + `ioregistry.m` 逻辑到 Go 的 cgo 层。
+
+---
+
+## 3. 架构
+
+**代码风格：DDD + 整洁架构（Clean / Hexagonal），四层 + 装配根。**
+详细分层规则、目录树、接口契约、ADR 与维护约定见 **[architecture.md](architecture.md)**（活文档，改需求/改代码必须同步）。
+
+一句话概括依赖方向：`presentation → application → domain`，`infrastructure → domain`（实现端口），
+`main.go` 是唯一装配根；`domain` 零外部依赖、可无 cgo 单测。
+
+| 目录 | 职责 |
+|---|---|
+| `main.go` | 装配根：建依赖 → 注册服务/托盘 → `app.Run()` |
+| `internal/bootstrap/` | 依赖构造与生命周期（含显示器热插拔监听） |
+| `internal/domain/display/` | Display 聚合、VCP 值对象、`Port` 接口（枚举/读/写） |
+| `internal/domain/source/` | SignalSource 聚合 + 不变量、端口预设、Accelerator、`Repository` 接口 |
+| `internal/domain/switching/` | 领域服务：重试 / 确认窗口 / 四态结果判定 |
+| `internal/application/` | 用例编排：`switchapp` / `configapp` / `displayapp` / `dto` |
+| `internal/infrastructure/ddc/` | DDC/CI 适配：`darwin`（cgo，唯一 `import "C"` 处）、`windows`/`linux`（桩） |
+| `internal/infrastructure/persistence/` | JSON 原子写 + `.bak` + 迁移 + 跨平台路径 |
+| `internal/infrastructure/platform/` | `hotkey` / `events` / `paths`（原生对话框、打开目录） |
+| `internal/presentation/` | `wailsservice`（薄适配）+ `tray`（菜单） |
+
+> 完整目录树（含每个文件名与职责）见 [architecture.md §3](architecture.md)——**那里是唯一事实来源**，
+> 本文只列层级职责，避免两处目录树各自漂移。
+
+### 分层原则
+
+- `domain/display.Port`（由平台实现）：
+  ```go
+  type Port interface {
+      List(ctx context.Context) ([]Display, error)
+      ReadVCP(ctx context.Context, id DisplayID, vcp VCPCode, alt bool) (ReadBack, error)
+      WriteVCP(ctx context.Context, id DisplayID, v InputValue) error
+  }
+  ```
+- 「一个 Source = 显示器 + 输入口」的规则在 `domain/switching`；步骤编排在 `application/switchapp`；只有 `presentation` 会发 Wails 事件/建菜单。
+- 前端只跟 Wails service 打交道，不直接碰 cgo；`src/api/` 包一层 bindings。
+
+---
+
+## 4. 数据模型
+
+```go
+// 持久化快照（= domain/source.Snapshot 的 JSON 映射）
+type Snapshot struct {
+    Version  int        `json:"version"`   // 目前 1，迁移用
+    Settings Settings   `json:"settings"`
+    Sources  []Source   `json:"sources"`
+}
+
+// 注意：Display 不进配置文件——它是从硬件实时枚举的只读快照，
+// Source 只存 DisplayID 引用（换显示器后不会因 ID 变化而丢失，UI 提示重新绑定）。
+type Settings struct {
+    ConfirmAfterSwitch bool `json:"confirmAfterSwitch"` // 切换后等读回（默认 true）
+    ConfirmMs          int  `json:"confirmMs"`          // 默认 1200
+    Retries            int  `json:"retries"`            // 默认 2
+    Language           string `json:"language"`         // "zh" / "en"
+    DebugMode          bool `json:"debugMode"`
+}
+
+type Display struct {
+    ID       string `json:"id"`        // macOS: System UUID（稳定）；Windows: monitor device id；Linux: connector+edid
+    Name     string `json:"name"`      // 用户可改名
+    Vendor   uint32 `json:"vendor"`
+    Model    uint32 `json:"model"`
+    Serial   uint32 `json:"serial"`
+    EDID     string `json:"edid"`
+}
+
+type Source struct {
+    ID         string   `json:"id"`          // 本地 uuid（crypto/rand）
+    Name       string   `json:"name"`        // "Mac" / "工作 PC" / "PS5"
+    Color      string   `json:"color"`       // 用于 UI 圆点/图标色，"#7E4E39" 之类
+    Icon       string   `json:"icon"`        // 内置 icon 名（见 §6.3）
+    DisplayID  string   `json:"displayId"`   // 对应 Displays[].ID
+    VCP        uint8    `json:"vcp"`         // 默认 0x60；LG 备用 0xF4
+    Value      uint16   `json:"value"`       // 15/16/17/18/27… 或自定义
+    Alt        bool     `json:"alt"`         // LG alternate（chip address 0x50）
+    Shortcut   string   `json:"shortcut"`    // "Cmd+Option+1"，空=不绑
+    ConfirmMs  int      `json:"confirmMs"`   // 切换后等待读回高亮的时长，默认 1200
+}
+```
+
+### 存储位置（跨平台，用 `os.UserConfigDir()`）
+
+| 系统 | 路径 |
+|---|---|
+| macOS | `~/Library/Application Support/switch-display/config.json` |
+| Windows | `%AppData%\switch-display\config.json` |
+| Linux | `$XDG_CONFIG_HOME/switch-display/config.json`，否则 `~/.config/switch-display/config.json` |
+
+- 写入用「临时文件 + rename」原子替换；
+- 保留 `config.json.bak`（上一版）；
+- 提供**导入/导出**按钮（导出用原生保存对话框，导出为 `switch-display-config-YYYYMMDD.json`）。
+
+---
+
+## 5. 后端服务（暴露给前端）
+
+Wails v3 service，命名 `DisplayService`（**薄适配层**：只做 DTO 映射 + 错误转文案，
+实际逻辑在 `internal/application/*app`，规则在 `internal/domain`）：
+
+```go
+// 显示器
+func (s *DisplayService) ListDisplays() ([]DisplayInfo, error)         // 实时枚举 + 是否已在配置里
+// 配置
+func (s *DisplayService) GetConfig() (Config, error)
+func (s *DisplayService) SaveConfig(cfg Config) error                 // 保存后重建托盘 + 重绑快捷键
+func (s *DisplayService) ExportConfig() (string, error)               // 返回 JSON 字符串
+func (s *DisplayService) ImportConfig(json string) (Config, error)
+// 切换
+func (s *DisplayService) SwitchSource(sourceID string) (SwitchResult, error)
+func (s *DisplayService) ReadCurrentInput(displayID string) (ReadResult, error)  // {supported bool, vcp, value}
+// 诊断
+func (s *DisplayService) ProbeVCP(displayID string, vcp uint8, alt bool) (ReadResult, error)  // 高级页：读一次探测是否支持
+```
+
+**事件**（前端 `Events.On` 订阅）
+
+| 事件 | payload | 时机 |
+|---|---|---|
+| `switch:started` | `{sourceId}` | 点击切换 |
+| `switch:result` | `{sourceId, outcome, confirmed, error, elapsedMs}` | 完成（含重试后） |
+| `dialogs:open-settings` | — | 托盘点了「设置…」 |
+| `state:refresh` | — | 显示器热插拔（1s 防抖）后，前端刷新列表 |
+
+`SwitchResult` 里带 `error` 字符串，前端 toast。`Outcome` 用四态
+（`confirmed` / `mismatch` / `applied_unconfirmed` / `failed`），理由见 §8 与 architecture.md ADR-003。
+
+映射关系：`ListDisplays/ReadCurrentInput/ProbeVCP` → `application/displayapp`；
+`GetConfig/SaveConfig/Export/Import` → `application/configapp`；`SwitchSource` → `application/switchapp`。
+
+---
+
+## 6. 前端
+
+### 6.1 技术栈
+
+- **Tailwind CSS v4**（`@tailwindcss/vite` 插件，`@import "tailwindcss"`）
+- **shadcn-vue**（Vite 安装流程，`components.json`，`@/` alias）
+  - 用到的组件：`button`、`card`、`dialog`、`alert-dialog`、`input`、`label`、`select`、`switch`、`badge`、`tooltip`、`dropdown-menu`、`sonner`(toast)、`separator`、`scroll-area`、`tabs`、`switch`、`radio-group`、`field`(可选)
+  - 主题：shadcn 默认 **neutral**，`light`/`dark` 双主题，跟随系统 + 手动切换（`next-themes` 思路自己写 20 行，不引 Nuxt 依赖）
+- **Pinia** 管理：`useConfigStore`、`useDisplayStore`、`useUiStore`
+- **Vue Router**：`/`（切换台）、`/sources`（信号源编辑）、`/settings`（显示器/高级/关于）
+  - 也可以不引 router，用 `tabs` + 状态机。**建议引 router**，配 `hash` history（WebView 里 file:// 更稳）。
+- **lucide-vue-next** 图标
+
+### 6.2 页面
+
+**1) 切换台（Home）** —— 主界面，也是设计重点
+
+- 顶部：当前显示器卡片（名字、分辨率、连接方式、当前输入源徽标；读不到就显示「未知」+ tooltip 解释）
+- 主体：信号源卡片网格（2~3 列），每张卡片：
+  - 大圆点/图标 + 名称 + 端口标签（如 `HDMI 1`）
+  - 当前激活的卡片有 ring + 高亮（靠读回或最近一次点击的乐观状态）
+  - hover 显示快捷键徽标（`⌘⌥1`）
+  - 点击 → loading（spinner 覆盖卡片）→ toast 结果
+- 空状态：引导「添加第一个信号源」→ 打开 Sheet
+- `Cmd/Ctrl+1..9` 窗口内快捷键也能切（区别于全局）
+
+**2) 信号源编辑（/sources）**
+
+- 列表 + 新增/编辑 Dialog：
+  - 名称、颜色（预设 12 色 swatch）、图标（预设 12 个）
+  - 显示器（Select，来自 `/ListDisplays`）
+  - 输入端口（Select，来自 §6.3 预设；选「自定义」则显示数值输入 + Alt 开关）
+  - 全局快捷键（点输入框进入「按下按键」录制模式，Esc 清空）
+  - 删除需 `alert-dialog` 二次确认
+- 拖拽排序（可选，v1 可用上移/下移按钮）
+
+**3) 设置（/settings）**
+
+- 显示器：检测到的显示器列表（UUID/EDID/Vendor/Model），「重新检测」
+- 行为：切换后等待读回高亮 (on/off)、切换重试次数、语言（中/英，先只做中文也行）
+- 高级：`ProbeVCP` 探测器（选 VCP 码 + Alt，点「读一次」看返回），显示原始 hex
+- 配置：导入 / 导出 / 打开配置目录 / 重置
+- 关于：版本、m1ddc 出处与 MIT 声明
+
+### 6.3 输入源预设（VCP 0x60）
+
+| 端口 | 值 |
+|---|---|
+| DisplayPort 1 | 15 |
+| DisplayPort 2 | 16 |
+| HDMI 1 | 17 |
+| HDMI 2 | 18 |
+| USB-C | 27 |
+| DVI 1 | 3 |
+| VGA | 1 |
+| 自定义 | 手填 0–65535 |
+
+LG alternate（VCP 0xF4，chip address 0x50）：DP1=208、DP2=209、HDMI1=144、HDMI2=145、USB-C/DP3=210。
+
+### 6.4 视觉
+
+- shadcn 默认中性灰 + Tailwind v4 CSS 变量（`--background` / `--foreground` / `--primary` …）
+- 删除模板的霓虹风格资源：`frontend/public/bg-desktop.jpg`、`bg-mobile.jpg`、`style.css` 里 `--ink/--glass` 那套、`index.html` 的 `.bg` div 和 `/style.css` 引用
+- 窗口：1000×618 → 改成 **980×700**（可 resize），`MacTitleBarHiddenInset` 保留，可以让顶部内容延伸到标题栏（traffic light 留白 `pt-10`）；`Backdrop` 去掉（要淡色背景跟着主题变）
+
+---
+
+## 7. 托盘 + 全局快捷键
+
+### 托盘（`app.SystemTray.New()`）
+
+- 图标：单色 template icon（SVG→PNG @1x/@2x，深色/浅色自动适配），做成品牌感一点的「显示器 + 箭头」
+- 单击：打开/聚焦主窗口
+- 菜单：**每次配置变化/切换后全量重建**（ADR-005），结构如下表
+
+| # | 菜单项 | 类型 | 行为 |
+|---|---|---|---|
+| 1 | 切换台 | 普通项 | 显示并聚焦主窗口 |
+| 2 | *(分隔线)* | Separator | — |
+| 3 | ● Mac `⌘⌥1` | **Radio**（选中 = 当前输入源） | 切到该源 |
+| 4 | ○ 工作 PC `⌘⌥2` | Radio | 切到该源 |
+| 5 | ○ PS5 `⌘⌥3` | Radio | 切到该源 |
+| 6 | *(分隔线)* | Separator | — |
+| 7 | 切回本机 | 普通项（配置了才显示） | 切回 Mac 自己的口 |
+| 8 | 设置… | 普通项 | 发 `dialogs:open-settings` |
+| 9 | 重新检测显示器 | 普通项 | 重新枚举 + 重建菜单 |
+| 10 | *(分隔线)* | Separator | — |
+| 11 | 退出 | 普通项 | `app.Quit()` |
+
+- 第 3–5 项用 `AddRadio` 表示当前输入源（**读回可用**时以读回为准，否则以最近一次点击的乐观态为准）
+- 关窗口 = 隐藏到后台（`MacOptions.ApplicationShouldTerminateAfterLastWindowClosed = false` + 窗口关闭拦截 `Hide()`）
+- 菜单栏「退出」才真退
+
+### 全局快捷键
+
+- `app.GlobalShortcut.Register(accel, cb)`，accel 用 Wails 语法（`Cmd+Option+1`，`CmdOrCtrl+Shift+F1`…）
+- 保存配置时：`UnregisterAll()` 后按新配置全部重绑
+- 注册失败（被别的 app 占用）→ 返回错误，UI 上该条标红并 toast「快捷键被占用」
+- **录制 UI**：`keydown` 捕获修饰键 + 主键，转成 Wails accel 字符串（注意把 `Option+数字` 在 macOS 上会变成特殊字符，必须用 `event.code` 判断，不能看 `event.key`）
+
+---
+
+## 8. 切换流程与可靠性（重点）
+
+DDC 写 KVM/输入源之后，显示器的输入切走会导致 **macOS 侧这块面板「离线」**，此时你没法再用同一个通道切回来 —— 但显示器其实还在响应 I2C，因为 DDC 通道走的是 DCP，只要显示器在 DP/HDMI 任意口上开着就还能写。实际经验里，**切换后立刻再写一次会失败**，需要：
+
+```mermaid
+flowchart LR
+    A["用户点击源 / 快捷键 / 托盘"] --> B["① 乐观 UI<br/>目标源置 active · 卡片 loading"]
+    B --> C["② 写 VCP 0x60<br/>失败重试 2 次 / 300ms"]
+    C -->|写入成功| D["③ 等待 ConfirmMs<br/>默认 1200ms"]
+    C -->|重试耗尽| F["failed<br/>错误 toast + 回退上次活跃态"]
+    D --> E["④ 读回 VCP 0x60 判定"]
+    E -->|读回 == 目标| OK["confirmed<br/>打勾 + 高亮"]
+    E -->|读回 != 目标| MM["mismatch<br/>提示「可能未生效」"]
+    E -->|读不支持 / 读失败| AU["applied_unconfirmed<br/>打勾 + 「未确认」角标"]
+
+    classDef good fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20
+    classDef bad fill:#ffebee,stroke:#c62828,color:#b71c1c
+    classDef mid fill:#fff8e1,stroke:#f9a825,color:#f57f17
+    classDef step fill:#e3f2fd,stroke:#1565c0,color:#0d47a1
+    class OK good
+    class F bad
+    class MM,AU mid
+    class A,B,C,D,E step
+```
+
+1. **乐观 UI**：点击后立即把目标设为 active，卡片进入 loading（不等硬件回应，因为 DDC 写可能几百 ms）；
+2. 写 VCP；失败重试（默认 2 次，间隔 300ms）；
+3. 等待 `ConfirmMs`（默认 1200ms）后尝试读回 VCP 0x60 → 四态 `Outcome`（判定表见 architecture.md §7.1）：
+   `confirmed` / `mismatch` / `applied_unconfirmed` / `failed`；
+4. 全程 4s 超时（ctx deadline），避免 UI 卡死。
+
+另外：**切换前先记住「Mac 自己所在的端口」**，在设置页提供「切回本机」的一键项（自动在首次运行时把当前看起来有效的端口存为 `__self__` 隐藏源，可手动在 UI 里确认）。这是我建议加的，因为切走后你很可能需要一键切回。
+
+> ⚠️ 风险提示：DDC 写输入源是**不可撤销的硬件动作**，写错可能让显示器黑屏几秒。所以：
+> - UI 上「自定义值」旁边要有明确说明；
+> - 提供「切回本机」快捷入口（托盘里也放一条）；
+> - 首次配置时提示用户先记下自己当前是哪个口。
+
+---
+
+## 9. 跨平台预留
+
+`internal/ddc` 接口不变，其他平台实现：
+
+| 平台 | 方案 | 状态 |
+|---|---|---|
+| Windows | `Dxva2.dll` / `MonitorConfiguration` + `SetVCPFeature`，显示器枚举用 `EnumDisplayMonitors` + `GetMonitorInfo`（`monitorDevice` 作稳定 ID） | 文件留桩，函数返回 `ErrUnsupported`；后续用 cgo 或 `syscall` 调 DLL |
+| Linux | `/dev/i2c-*` + `i2c-dev` ioctl（`I2C_RDWR`）直接发 DDC/CI 帧；或用 `ddcutil` 子进程兜底 | 文件留桩 |
+
+`main.go` 里所有依赖 macOS 的部分（托盘图标名、`MacOptions`）都要能编译过；用 build tag 隔离。
+
+`go.mod` 里 `module changeme` → 改成 `module github.com/<you>/switch-display`（需要你确认模块名）。
+
+---
+
+## 10. 依赖清单（前端）
+
+```jsonc
+"dependencies": {
+  "vue": "^3.5",
+  "pinia": "^4",
+  "vue-router": "^4",
+  "lucide-vue-next": "^0.5xx",
+  "reka-ui": "（shadcn-vue 依赖，CLI 自动装）",
+  "class-variance-authority", "clsx", "tailwind-merge", "tailwindcss-animate"(或 tw-animate-css)
+},
+"devDependencies": {
+  "tailwindcss": "^4", "@tailwindcss/vite": "^4",
+  "@types/node": "^24", "vite": "^8", "vue-tsc": "^3"
+}
+```
+
+后端：零新增 Go 依赖（cgo 只链系统 framework）。
+
+---
+
+## 11. 代码风格约定
+
+- **分层**：见 [architecture.md](architecture.md) §2 的 R1–R8 规则；`domain` 零外部依赖，`import "C"` 只允许出现在 `infrastructure/ddc/darwin/`。
+- **命名**：包按领域命名（`display`/`source`/`switching`），不按技术命名（不要 `models`/`utils`/`helpers`）。
+- **错误**：domain 只返回哨兵错误 + `%w` 包装；用户可见中文文案只在 `presentation/wailsservice/errors.go` 一张表里。
+- **接口**：定义在使用方（domain 定义它需要的端口），实现放 infrastructure；接口保持 1–4 个方法，名字体现意图。
+- **并发**：DDC 访问在适配器内用 `sync.Mutex` 串行化；配置用 `RWMutex`；切换操作有"进行中"标志防重入。
+- **测试**：domain/application 用 fake 端口单测（含 fake clock）；真机 DDC 用 `//go:build ddc_integration` 隔离。
+- **注释**：解释"为什么"不解释"是什么"；架构级决策写进 `architecture.md` 的 ADR，不散落在代码里。
+- **文档同步**：任何需求变更/接口变更/新依赖/新包，同一提交内更新 `docs/architecture.md`（检查清单见其 §11）与本文档。
+- **图表**：流程图/时序图/分层图用 **Mermaid**；目录结构树用 ASCII 树（见 architecture.md §3）；节点名与代码包名保持一致。
+
+---
+
+## 12. 实施步骤（建议顺序）
+
+按「先领域、后基础设施、最后表现层」推进，每一步都能编译 + 独立验证：
+
+1. **清理模板**（✅）：删 `greetservice.go`、`HelloWorld.vue`、霓虹样式；`go.mod` 改模块名 `github.com/znahovo/switch-display`；`main.go` 精简为装配根。
+2. **建立 `docs/architecture.md` 基线**（✅ 已完成），之后每次提交按 architecture.md §11 的清单同步。
+3. **domain/display + domain/source**（✅ 含单测）：纯 Go 聚合、值对象、不变量、端口接口、哨兵错误；单测全覆盖（无 cgo、无 GUI）。
+4. **domain/switching**（✅ 含单测）：重试/确认窗口/四态判定；用 fake `Clock` + fake `Port` 单测（覆盖 confirmed / mismatch / unconfirmed / failed）。
+5. **infrastructure/ddc/darwin**（✅ 已跑通本机 Mi Monitor）：cgo + `.m`（`IOAVServiceRead/WriteI2C`、IORegistry 枚举），实现 `display.Port`；`//go:build ddc_integration` 集成测试先跑通「列出 Mi Monitor」「读 0x10」「写 0x60」；同时放 `windows/stub.go`、`linux/stub.go` + `new_*.go` 工厂（保证交叉编译不炸）。
+6. **infrastructure/persistence**（✅ 含单测）：JSON 原子写 + `.bak` + 迁移 + 路径；临时目录单测。
+7. **application**（✅）：`switchapp` / `configapp` / `displayapp` + `dto`；用 fake 端口单测。
+8. **infrastructure/platform + presentation**（✅ 除 tray）：快捷键/事件适配、`wailsservice`、`tray`；`wails3 generate bindings` 确认 TS 类型。
+9. **bootstrap + main.go** 装配（✅ 能跑、能切换；托盘留第二步）。
+10. **前端**（第一步 ✅ 极简版）：Tailwind v4 + shadcn 风格组件 + Pinia + vue-i18n + 单页切换台；三页面/快捷键录制留第二步。
+11. **打磨**：空状态、错误文案、i18n 骨架、README、`wails3 build` 出 app；同步 `docs/architecture.md` 的状态列。
+
+---
+
+## 13. 需要你确认的点
+
+1. **模块名**：`go.mod` 现在是 `module changeme`，绑定目录会跟着变。建议 `github.com/<你的 GitHub 名>/switch-display`——给我一个名字，或直接说用 `switchdisplay`。
+2. **应用/打包信息**：`build/config.yml` 里 companyName/productName/productIdentifier 还是 `My Company` / `My Product` / `com.mycompany.myproduct`。给我：应用显示名（`Switch Display`?）、bundle id（`com.nnn.switchdisplay`?）、公司/作者名。
+3. **托盘图标**：我可以先用一个自绘的单色 SVG（显示器+切换箭头），你需要换成自己的话后面替换 `build/appicon.png` 和 tray 图标目录。行不行？
+4. **「切回本机」这个隐藏源**（§8）要不要？我倾向要。
+5. **语言**：界面只做中文，还是中英双语（i18n 骨架先搭好）？
+6. **亮度/对比度/音量调节页**：v1 不做，对吧？（我按「不做」写，但 DDC 层已支持，加页面只是 UI 工作量）
+7. **Windows/Linux 桩代码**：现在就放 `_windows.go` / `_linux.go` 桩（保证交叉编译不炸），还是等真正上那台机器时再写？
+
+---
+
+## 14. 已知风险 / 限制
+
+- **读输入源不可靠**（本机实测 return 18/max 14）→ 当前高亮只能是「尽力而为」，UI 必须支持「未知」态；不承诺所有显示器都能读。
+- **DDC 写失败是常态**：廉价的 KVM/转接器常不转发 DDC；失败时要给清晰文案而不是静默。
+- **切走后本机收不到画面**，所以不能靠「切完读回」做确定性验证，只能乐观 + 超时。
+- **macOS 权限**：DDC 通过 IOKit，不需要辅助功能权限；但**全局快捷键**不需要权限（Wails 用 Carbon RegisterEventHotKey），**读其他 app 窗口**才需要。所以无需授权弹窗。
+- **App 签名/公证**：本地 dev 无所谓；分发给别人需要 Developer ID + notarization，cgo 二进制要一起签名（hardened runtime 下 IOKit 调用没问题）。
+- **Wails v3 还是 beta**：托盘/快捷键 API 有变动可能，代码里已按 beta.34 的实际签名写，升级时注意。

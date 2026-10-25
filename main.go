@@ -1,87 +1,55 @@
+// Switch Display —— 一台显示器接多个系统时，一键切到对应信号源。
+//
+// 这个文件是**唯一的装配根**（architecture.md §2 R5）：它只做三件事——
+// 构造 Wails 应用、把 bootstrap 装配好的服务挂上去、启动。不含任何业务逻辑。
 package main
 
 import (
 	"embed"
-
 	"log"
-	"time"
 
-	"github.com/wailsapp/wails/v3/pkg/application"
+	wails "github.com/wailsapp/wails/v3/pkg/application"
+
+	"github.com/znahovo/switch-display/internal/bootstrap"
 )
-
-// Wails uses Go's `embed` package to embed the frontend files into the binary.
-// Any files in the frontend/dist folder will be embedded into the binary and
-// made available to the frontend.
-// See https://pkg.go.dev/embed for more information.
 
 //go:embed all:frontend/dist
 var assets embed.FS
 
-func init() {
-	// Register a custom event whose associated data type is string.
-	// This is not required, but the binding generator will pick up registered events
-	// and provide a strongly typed JS/TS API for them.
-	application.RegisterEvent[string]("time")
-}
-
-// main function serves as the application's entry point. It initializes the application, creates a window,
-// and starts a goroutine that emits a time-based event every second. It subsequently runs the application and
-// logs any error that might occur.
 func main() {
-
-	// Create a new Wails application by providing the necessary options.
-	// Variables 'Name' and 'Description' are for application metadata.
-	// 'Assets' configures the asset server with the 'FS' variable pointing to the frontend files.
-	// 'Bind' is a list of Go struct instances. The frontend has access to the methods of these instances.
-	// 'Mac' options tailor the application when running an macOS.
-	app := application.New(application.Options{
-		Name:        "switch_display",
-		Description: "A demo of using raw HTML & CSS",
-		Services: []application.Service{
-			application.NewService(&GreetService{}),
+	app := wails.New(wails.Options{
+		Name:        "Switch Display",
+		Description: "Switch monitor input source with one click",
+		Assets: wails.AssetOptions{
+			Handler: wails.AssetFileServerFS(assets),
 		},
-		Assets: application.AssetOptions{
-			Handler: application.AssetFileServerFS(assets),
-		},
-		Mac: application.MacOptions{
-			ApplicationShouldTerminateAfterLastWindowClosed: true,
+		Mac: wails.MacOptions{
+			// 关掉最后一个窗口就退出会让「关闭窗口 = 隐藏到托盘」失效，
+			// 所以这里必须为 false（托盘第二步会用到）。
+			ApplicationShouldTerminateAfterLastWindowClosed: false,
 		},
 	})
 
-	// Create a new window with the necessary options.
-	// 'Title' is the title of the window.
-	// 'Mac' options tailor the window when running on macOS.
-	// 'BackgroundColour' is the background colour of the window.
-	// 'URL' is the URL that will be loaded into the webview.
-	app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title: "Window 1",
-		// Window sized to the golden ratio (1000 / 618 ≈ 1.618).
-		Width:  1000,
-		Height: 618,
-		Mac: application.MacWindow{
-			InvisibleTitleBarHeight: 50,
-			Backdrop:                application.MacBackdropTranslucent,
-			TitleBar:                application.MacTitleBarHiddenInset,
+	wire, err := bootstrap.Build(app)
+	if err != nil {
+		log.Fatalf("bootstrap: %v", err)
+	}
+	app.RegisterService(wails.NewService(wire.DisplayService))
+
+	app.Window.NewWithOptions(wails.WebviewWindowOptions{
+		Title:  "Switch Display",
+		Width:  880,
+		Height: 620,
+		Mac: wails.MacWindow{
+			InvisibleTitleBarHeight: 40,
+			Backdrop:                wails.MacBackdropTranslucent,
+			TitleBar:                wails.MacTitleBarHiddenInset,
 		},
-		BackgroundColour: application.NewRGB(6, 7, 15),
+		BackgroundColour: wails.NewRGBA(0, 0, 0, 0),
 		URL:              "/",
 	})
 
-	// Create a goroutine that emits an event containing the current time every second.
-	// The frontend can listen to this event and update the UI accordingly.
-	go func() {
-		for {
-			now := time.Now().Format(time.RFC1123)
-			app.Event.Emit("time", now)
-			time.Sleep(time.Second)
-		}
-	}()
-
-	// Run the application. This blocks until the application has been exited.
-	err := app.Run()
-
-	// If an error occurred while running the application, log it and exit.
-	if err != nil {
+	if err := app.Run(); err != nil {
 		log.Fatal(err)
 	}
 }
