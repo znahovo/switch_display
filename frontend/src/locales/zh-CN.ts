@@ -7,6 +7,8 @@ export default {
     switcher: "切换台",
     sources: "信号源",
     settings: "设置",
+    collapse: "收起侧栏",
+    expand: "展开侧栏",
   },
   common: {
     retry: "重试",
@@ -30,6 +32,8 @@ export default {
     current: "当前",
     confirmHint: "正在等待显示器确认…",
     addFirst: "添加第一个信号源",
+    builtin: "本机",
+    switchingShort: "切换中",
   },
   outcome: {
     pending: "正在发送指令…",
@@ -61,6 +65,11 @@ export default {
     clearShortcut: "清除快捷键",
     revert: "撤销改动",
     empty: "还没有信号源。",
+    newTitle: "新增信号源",
+    editTitle: "编辑信号源",
+    edit: "编辑",
+    unnamed: "未命名",
+    confirmMsShort: "确认",
   },
   settings: {
     title: "设置",

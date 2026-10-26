@@ -188,34 +188,30 @@ func (s *DisplayService) ProbeVCP(displayID string, vcp uint8, alt bool) (ReadRe
 
 ### 6.2 页面
 
+**导航（全局）**：**左侧可折叠 sidebar**（展开 204px / 收起 60px，折叠态持久化到 `localStorage["switch-display:nav-collapsed"]`）。顶部 40px 拖拽区（红绿灯落在这里），中间三个入口「切换台 / 信号源 / 设置」，底部「收起侧栏」与语言切换。选中项 = 白底 + 描边 + 加粗。
+
 **1) 切换台（Home）** —— 主界面，也是设计重点
 
-- 顶部：当前显示器卡片（名字、分辨率、连接方式、当前输入源徽标；读不到就显示「未知」+ tooltip 解释）
-- 主体：信号源卡片网格（2~3 列），每张卡片：
-  - 大圆点/图标 + 名称 + 端口标签（如 `HDMI 1`）
-  - 当前激活的卡片有 ring + 高亮（靠读回或最近一次点击的乐观状态）
-  - hover 显示快捷键徽标（`⌘⌥1`）
-  - 点击 → loading（spinner 覆盖卡片）→ toast 结果
-- 空状态：引导「添加第一个信号源」→ 打开 Sheet
-- `Cmd/Ctrl+1..9` 窗口内快捷键也能切（区别于全局）
+- 顶部：显示器 chips（名字 + 「本机」徽标；读不到就显示「未知」）
+- 右上操作区：「重新检测」「+ 添加」（点击后在列表**上方**展开新增表单）
+- 主体：信号源卡片列表，每张卡片：
+  - 左侧图标 + 名称 + 端口标签（如 `HDMI 1`）；副信息固定行高 → 卡片等高
+  - 当前激活的卡片：绿色描边 + 图标底色 + 「当前」徽标（靠读回或最近一次点击的乐观状态）
+  - 右侧：结果徽标（成功/未生效/失败）+ 固定宽 74px 的「切换」按钮
+  - 双击卡片也能切；hover 才显示删除按钮
 
 **2) 信号源编辑（/sources）**
 
-- 列表 + 新增/编辑 Dialog：
-  - 名称、颜色（预设 12 色 swatch）、图标（预设 12 个）
-  - 显示器（Select，来自 `/ListDisplays`）
-  - 输入端口（Select，来自 §6.3 预设；选「自定义」则显示数值输入 + Alt 开关）
-  - 全局快捷键（点输入框进入「按下按键」录制模式，Esc 清空）
-  - 删除需 `alert-dialog` 二次确认
-- 拖拽排序（可选，v1 可用上移/下移按钮）
+- **编辑器在列表上方**（这是硬要求：表单在下方时用户得往下翻才能录入）
+- 勾「添加」或双击某行 → 顶部出现「新增信号源 / 编辑信号源」卡片，新增行立刻进入编辑态
+- 编辑器字段（两列网格，用 `Field` 统一 label/hint 节奏）：名称、显示器（Select）、输入端口（Select 来自 §6.3 预设；选「自定义」则数值输入可编辑）、全局快捷键（点输入框进入录制模式，Esc 取消/清除）、确认等待（毫秒）；底部左侧显示 `VCP 0x60 = <value>` 等宽小字，右侧「取消 / 保存」
+- 下方是表格化列表：列宽固定（名称 `flex-1` / 输入口 `w-20` / 快捷键 `w-28` / 确认 `w-16` / 操作 `w-16`），表头与行用同一套 padding，保证**跨行视觉对齐**
+- 草稿整体提交：顶部「保存」一次落盘，旁边「撤销改动」丢弃未保存修改
 
 **3) 设置（/settings）**
 
-- 显示器：检测到的显示器列表（UUID/EDID/Vendor/Model），「重新检测」
-- 行为：切换后等待读回高亮 (on/off)、切换重试次数、语言（中/英，先只做中文也行）
-- 高级：`ProbeVCP` 探测器（选 VCP 码 + Alt，点「读一次」看返回），显示原始 hex
-- 配置：导入 / 导出 / 打开配置目录 / 重置
-- 关于：版本、m1ddc 出处与 MIT 声明
+- 统一用 `SettingRow`（左标题/说明 + 右控件）：语言、关闭窗口时隐藏到菜单栏、切换后读回确认、确认等待默认值、本机源（「切回本机」指向哪个源）
+- 配置路径只读展示（等宽字体），导入 / 导出走系统文件对话框
 
 ### 6.3 输入源预设（VCP 0x60）
 
@@ -236,7 +232,8 @@ LG alternate（VCP 0xF4，chip address 0x50）：DP1=208、DP2=209、HDMI1=144�
 
 - shadcn 默认中性灰 + Tailwind v4 CSS 变量（`--background` / `--foreground` / `--primary` …）
 - 删除模板的霓虹风格资源：`frontend/public/bg-desktop.jpg`、`bg-mobile.jpg`、`style.css` 里 `--ink/--glass` 那套、`index.html` 的 `.bg` div 和 `/style.css` 引用
-- 窗口：1000×618 → 改成 **980×700**（可 resize），`MacTitleBarHiddenInset` 保留，可以让顶部内容延伸到标题栏（traffic light 留白 `pt-10`）；`Backdrop` 去掉（要淡色背景跟着主题变）
+- 窗口：**880×620**（不 resize），`MacTitleBarHiddenInset` 保留，内容延伸到标题栏（左侧栏顶部留 40px 拖拽区）；`MacBackdropTranslucent` 保留半透明底
+- 组件化保证对齐：`PageShell`（页面标题/说明/操作区）、`Field`（label + 控件 + hint）、`SettingRow`（设置项）、`Badge`（状态徽标 6 变体）、`SourceEditor`（新增/编辑共用）
 
 ---
 
@@ -379,7 +376,7 @@ flowchart LR
 7. **application**（✅）：`switchapp` / `configapp` / `displayapp` + `dto`；用 fake 端口单测。
 8. **infrastructure/platform + presentation**（✅ 第二步完成 tray）：快捷键/事件适配、`wailsservice`、`tray`（SystemTray + template icon + 全量重建菜单 + Radio 打勾 + 关窗隐藏）；`wails3 generate bindings` 确认 TS 类型。
 9. **bootstrap + main.go** 装配（✅ 第二步完成托盘接线与关窗拦截）。
-10. **前端**（✅ 第二步完成三页）：Tailwind v4 + shadcn 风格组件 + Pinia + vue-i18n + hash 路由（切换台 / 信号源 / 设置）+ 快捷键录制。
+10. **前端**（✅ 第二步三页 + ✅ UI 改版）：Tailwind v4 + shadcn 风格组件 + Pinia + vue-i18n + hash 路由（切换台 / 信号源 / 设置）+ 快捷键录制；左侧可折叠 sidebar、编辑器置顶、信号源页表格化对齐。
 11. **打磨**：空状态、错误文案、i18n 骨架、README、`wails3 build` 出 app；同步 `docs/architecture.md` 的状态列。
 
 ---

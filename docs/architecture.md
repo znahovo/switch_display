@@ -200,11 +200,25 @@ switch_display/
 │       ├── api/index.ts             # 包一层 bindings：组件不直接调 $Call
 │       ├── stores/app.ts            # Pinia：显示器 + 信号源 + 设置（单一 store）
 │       ├── router/index.ts          # hash 路由：/ /sources /settings（ADR-006）
+│       ├── App.vue                  # 左侧可折叠导航栏（宽度持久化到 localStorage）+ RouterView
 │       ├── views/
 │       │   ├── SwitcherView.vue     # 切换台：点卡片即切
 │       │   ├── SourcesView.vue      # 信号源增删改 + 快捷键录制（整体提交）
 │       │   └── SettingsView.vue     # 语言 / 关窗隐藏 / 读回确认 / 本机源 / 导入导出
-│       ├── components/              # ui/（Button/Card/Input/Label/Select）+ SourceCard.vue
+│       ├── components/
+│       │   ├── PageShell.vue         # 页面骨架：标题 + 说明 + 右上操作区（三页统一起点）
+│       │   ├── SettingRow.vue        # 设置项行：左标题/说明 + 右控件（对齐由结构保证）
+│       │   ├── SourceCard.vue        # 切换台的信号源卡片（当前态/结果徽标/切换按钮）
+│       │   ├── SourceEditor.vue      # 新增与编辑共用表单（两列网格 + 快捷键录制）
+│       │   └── ui/                   # 手写 shadcn 风格原子组件
+│       │       ├── Button.vue        # cva：default/secondary/outline/ghost/destructive
+│       │       ├── Card.vue
+│       │       ├── Input.vue
+│       │       ├── Label.vue
+│       │       ├── Select.vue        # 原生 select 封装
+│       │       ├── Checkbox.vue      # 原生 checkbox + defineModel<boolean>
+│       │       ├── Badge.vue         # cva：default/secondary/outline/success/warning/danger
+│       │       └── Field.vue         # 表单字段：label + 控件 + hint（垂直节奏统一）
 │       ├── locales/                 # i18n 骨架（en / zh-CN）
 │       └── lib/
 │           ├── utils.ts             # cn()
@@ -597,3 +611,4 @@ flowchart TB
 | 2026-10-26 | **第二步落地**：`presentation/tray`（SystemTray + template icon + 全量重建菜单 + Radio 打勾 + 「切回本机」+ 「设置…」/「重新检测」/「退出」+ 关窗隐藏）、`Settings.SelfSourceID`（存源 ID 而非端口值，改端口后「切回本机」自动跟随）、前端三页 + hash 路由（`vue-router` 5.4.0）、`lib/accelerator.ts`（用 `event.code` 录制，避免 Option 组合键变成特殊字符）、i18n 补齐 settings/sources 文案 | 代码 + docs |
 | 2026-10-25 | **与 m1ddc 的行为差异（重要）**：读请求的校验和必须包含 `inputAddress` —— `request[3] = 0x6E ^ addr ^ request[0] ^ request[1] ^ request[2]`。m1ddc 的 `prepareDDCRead()` 漏了 addr，导致本机 Mi Monitor 读回纯噪声（`get contrast` 得到 50739）。修正后回复帧规整（亮度/对比度 cur≤max，输入源 cur=18）。此差异记录在 `internal/infrastructure/ddc/darwin/i2c.m` 注释中 | infrastructure/ddc |
 | 2026-10-26 | **补齐后端 Go 单测并新增 §11 测试策略**：14 个包全部有用例（新增/扩写 `domain/display`、`application/{dto,configapp,displayapp,switchapp}`、`infrastructure/{ddc,ddc/darwin(branches),persistence(migrate),platform(+hotkey)}`、`presentation/{tray(+switch,+labels),wailsservice(+extra,+errors)}`、`bootstrap`）。覆盖 0% → 100% 的包 3 个（display / ddc / bootstrap），tray 10%→70%、wailsservice 53%→96%。测试暴露并修掉两个真 bug：① `tray.AddRadio(label, busy)` 第二参是 checked 不是 enabled（busy 时源项没被禁用）；② `displayapp.Refresh` 返回内部切片（调用方改名会污染缓存）。新增 §11 记录分层测试策略与 5 条约定（fake clock 必须返回 `context.Canceled` 等），原 §11/§12 顺延为 §12/§13 | 全部测试 + docs |
+| 2026-10-26 | **前端 UI 改版**：导航从顶部横排改为 **左侧可折叠 sidebar**（宽度 204px/60px，折叠态持久化到 `localStorage["switch-display:nav-collapsed"]`，底部放折叠与语言切换）；「添加信号源」表单从列表下方挪到**列表上方**（`SourcesView` 改为 `editingId` 单编辑器模式，新增行立刻进入编辑）；新增 5 个结构组件把视觉对齐变成结构保证：`PageShell`（标题/说明/操作区）、`SettingRow`（设置项）、`Field`（label+控件+hint）、`Badge`（6 变体徽标）、`Checkbox`；`SourceEditor` 新增/编辑共用（两列网格 + 快捷键录制遮罩）；切换台卡片重排（名称/副信息固定行高 → 卡片等高，切换按钮固定 74px 宽） | 前端 + docs |

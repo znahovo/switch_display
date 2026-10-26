@@ -1,18 +1,18 @@
 <script setup lang="ts">
-// 切换台：第一版唯一的页面。
+// 切换台：主操作页。
 //
-// 只做两件事：列出信号源、点一下切换过去。增删改放在下面的「新增」表单里，
-// 独立的管理页留到第二步（托盘/快捷键一起做）。
+// 只做两件事：列出信号源、点一下切换过去。新增用同一个 SourceEditor，
+// 放在列表**上方**——表单在下面时，用户点完「添加」还得往下滚才能填。
 import { computed, onMounted, ref } from "vue"
 import { useI18n } from "vue-i18n"
-import { Plus, RefreshCw, Monitor } from "lucide-vue-next"
+import { Monitor, Plus, RefreshCw } from "lucide-vue-next"
 import { useAppStore } from "@/stores/app"
+import PageShell from "@/components/PageShell.vue"
+import SourceCard from "@/components/SourceCard.vue"
+import SourceEditor from "@/components/SourceEditor.vue"
+import Badge from "@/components/ui/Badge.vue"
 import Button from "@/components/ui/Button.vue"
 import Card from "@/components/ui/Card.vue"
-import Input from "@/components/ui/Input.vue"
-import Label from "@/components/ui/Label.vue"
-import Select from "@/components/ui/Select.vue"
-import SourceCard from "@/components/SourceCard.vue"
 import type { SourceDTO } from "@/api"
 
 const { t } = useI18n()
@@ -21,26 +21,7 @@ const store = useAppStore()
 const showForm = ref(false)
 const saving = ref(false)
 const formError = ref("")
-
-const draft = ref({
-  name: "",
-  displayId: "",
-  presetKey: "hdmi1",
-  customValue: 0,
-  alt: false,
-  confirmMs: 1200,
-})
-
-/** 用于下拉的端口表：常用预设 + 自定义。 */
-const portOptions = computed(() => [
-  ...store.presets.map((p) => ({
-    key: p.key,
-    label: p.key.toUpperCase().replace("USBC", "USB-C"),
-    value: p.value,
-    alt: p.alt,
-  })),
-  { key: "custom", label: t("common.custom"), value: -1, alt: false },
-])
+const draft = ref<SourceDTO | null>(null)
 
 onMounted(async () => {
   await Promise.all([store.loadPresets(), store.refresh()])
@@ -48,22 +29,26 @@ onMounted(async () => {
   for (const d of store.displays.filter((x) => !x.builtin)) {
     void store.readCurrent(d.id)
   }
-  if (!draft.value.displayId) {
-    draft.value.displayId = store.displays.find((d) => !d.builtin)?.id ?? store.displays[0]?.id ?? ""
-  }
 })
 
 function openForm() {
   formError.value = ""
   draft.value = {
+    id: nextId(),
     name: "",
+    color: "",
     displayId: store.displays.find((d) => !d.builtin)?.id ?? store.displays[0]?.id ?? "",
-    presetKey: "hdmi1",
-    customValue: 0,
-    alt: false,
+    input: { vcp: 0x60, value: 17, alt: false, presetKey: "hdmi1" },
+    shortcut: "",
     confirmMs: store.settings.defaultConfirmMs,
   }
   showForm.value = true
+}
+
+function closeForm() {
+  showForm.value = false
+  draft.value = null
+  formError.value = ""
 }
 
 /** 下一个可用 id：配置里 id 只是稳定标识，内容全在字段里，所以顺序编号即可。 */
@@ -75,30 +60,16 @@ function nextId(): string {
 }
 
 async function addSource() {
-  const opt = portOptions.value.find((p) => p.key === draft.value.presetKey)
-  const value = opt && opt.value >= 0 ? opt.value : draft.value.customValue
-  const alt = opt?.alt ?? draft.value.alt
-
-  const next: SourceDTO = {
-    id: nextId(),
-    name: draft.value.name.trim(),
-    color: "",
-    displayId: draft.value.displayId,
-    input: { vcp: alt ? 0xf4 : 0x60, value, alt, presetKey: opt?.key ?? "" },
-    shortcut: "",
-    confirmMs: draft.value.confirmMs,
-  }
-
+  if (!draft.value) return
   saving.value = true
   formError.value = ""
-  const res = await store.save({ sources: [...store.sources, next], settings: store.settings })
+  const res = await store.save({ sources: [...store.sources, draft.value], settings: store.settings })
   saving.value = false
-
   if (!res.ok) {
     formError.value = store.error ? store.errorText(t) : t("errors.internal")
     return
   }
-  showForm.value = false
+  closeForm()
 }
 
 async function removeSource(id: string) {
@@ -112,42 +83,50 @@ async function removeSource(id: string) {
 function displayName(id: string): string {
   return store.displayById.get(id)?.name ?? t("common.unknown")
 }
+
+const externalDisplays = computed(() => store.displays.filter((d) => !d.builtin))
 </script>
 
 <template>
-  <div class="mx-auto flex w-full max-w-3xl flex-col gap-5 px-6 pb-8">
-    <div class="flex items-center justify-between">
-      <div>
-        <h1 class="text-lg font-semibold tracking-tight">{{ t("nav.switcher") }}</h1>
-        <p class="mt-1 text-sm text-muted-foreground">{{ t("app.subtitle") }}</p>
-      </div>
-      <div class="no-drag flex gap-2">
-        <Button variant="outline" size="sm" @click="store.refreshDisplays()">
-          <RefreshCw class="size-3.5" />
-          {{ t("common.refresh") }}
-        </Button>
-        <Button size="sm" @click="openForm">
-          <Plus class="size-3.5" />
-          {{ t("common.add") }}
-        </Button>
-      </div>
-    </div>
+  <PageShell :title="t('nav.switcher')" :hint="t('app.subtitle')">
+    <template #actions>
+      <Button variant="outline" size="sm" @click="store.refreshDisplays()">
+        <RefreshCw class="size-3.5" />
+        {{ t("common.refresh") }}
+      </Button>
+      <Button size="sm" :disabled="showForm" @click="openForm">
+        <Plus class="size-3.5" />
+        {{ t("common.add") }}
+      </Button>
+    </template>
 
     <!-- 显示器上下文：切之前用户要确认自己动的是哪一台 -->
-    <div v-if="store.displays.length" class="flex flex-wrap gap-2">
+    <div v-if="store.displays.length" class="flex flex-wrap gap-1.5">
       <div
         v-for="d in store.displays"
         :key="d.id"
-        class="flex items-center gap-2 rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground"
+        class="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border/70 bg-card px-2 text-[12px]"
       >
-        <Monitor class="size-3.5" />
-        <span class="text-foreground">{{ d.name }}</span>
-        <span v-if="d.builtin" class="rounded bg-secondary px-1">{{ t("common.unknown") }}</span>
+        <Monitor class="size-3.5 text-muted-foreground" />
+        <span class="font-medium">{{ d.name }}</span>
+        <Badge v-if="d.builtin" variant="outline">{{ t("switcher.builtin") }}</Badge>
       </div>
     </div>
-    <p v-else class="text-sm text-muted-foreground">{{ t("sources.noDisplays") }}</p>
 
-    <!-- 快照列表 -->
+    <!-- 新增表单在列表上方 -->
+    <SourceEditor
+      v-if="showForm && draft"
+      :source="draft"
+      :displays="store.displays"
+      :presets="store.presets"
+      :title="t('sources.newTitle')"
+      :error="formError"
+      :saving="saving"
+      @save="addSource"
+      @cancel="closeForm"
+      @change="formError = ''"
+    />
+
     <div v-if="store.sources.length" class="flex flex-col gap-2.5">
       <SourceCard
         v-for="src in store.sources"
@@ -168,51 +147,7 @@ function displayName(id: string): string {
       <Button size="sm" @click="openForm">{{ t("switcher.addFirst") }}</Button>
     </Card>
 
-    <!-- 新增表单：第一步先做成内联面板，省掉一个独立路由 -->
-    <Card v-if="showForm" class="p-5">
-      <div class="grid gap-4">
-        <div class="grid gap-1.5">
-          <Label>{{ t("sources.name") }}</Label>
-          <Input v-model="draft.name" :placeholder="t('sources.namePlaceholder')" maxlength="32" />
-        </div>
-
-        <div class="grid gap-1.5">
-          <Label>{{ t("sources.display") }}</Label>
-          <Select v-model="draft.displayId">
-            <option v-for="d in store.displays" :key="d.id" :value="d.id">{{ d.name }}</option>
-          </Select>
-        </div>
-
-        <div class="grid gap-1.5">
-          <Label>{{ t("sources.port") }}</Label>
-          <Select v-model="draft.presetKey">
-            <option v-for="p in portOptions" :key="p.key" :value="p.key">{{ p.label }}</option>
-          </Select>
-        </div>
-
-        <div v-if="draft.presetKey === 'custom'" class="grid gap-1.5">
-          <Label>{{ t("sources.customValue") }}</Label>
-          <Input v-model.number="draft.customValue" type="number" min="1" max="65535" />
-        </div>
-
-        <div class="grid gap-1.5">
-          <Label>{{ t("sources.confirmMs") }}</Label>
-          <Input v-model.number="draft.confirmMs" type="number" min="0" max="10000" step="100" />
-          <p class="text-xs text-muted-foreground">{{ t("sources.confirmMsHint") }}</p>
-        </div>
-
-        <p v-if="formError" class="text-sm text-destructive">{{ formError }}</p>
-
-        <div class="flex justify-end gap-2">
-          <Button variant="ghost" size="sm" @click="showForm = false">{{ t("common.cancel") }}</Button>
-          <Button size="sm" :disabled="saving || !draft.name.trim()" @click="addSource">
-            {{ t("common.save") }}
-          </Button>
-        </div>
-      </div>
-    </Card>
-
-    <p v-if="store.error" class="text-sm text-destructive">{{ store.errorText(t) }}</p>
+    <p v-if="store.error" class="text-[13px] text-destructive">{{ store.errorText(t) }}</p>
     <p v-for="w in store.warnings" :key="w" class="text-xs text-muted-foreground">{{ w }}</p>
-  </div>
+  </PageShell>
 </template>
