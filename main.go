@@ -28,6 +28,12 @@ func main() {
 			// 所以这里必须为 false（托盘第二步会用到）。
 			ApplicationShouldTerminateAfterLastWindowClosed: false,
 		},
+		Windows: wails.WindowsOptions{
+			// Windows 上语义相同：默认关掉最后一个窗口就会 PostQuitMessage，
+			// 那样「关闭窗口 = 收进托盘」就变成了「退出程序」。
+			// 真正的退出走托盘菜单的「退出」（app.Quit）。
+			DisableQuitOnLastWindowClosed: true,
+		},
 	})
 
 	wire, err := bootstrap.Build(app)

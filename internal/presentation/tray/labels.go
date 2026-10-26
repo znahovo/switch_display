@@ -36,7 +36,7 @@ func labelsFor(lang string) labels {
 	return labels{
 		Open:        "Open Switch Display",
 		NoSources:   "No signal sources yet",
-		BackToSelf:  "Back to This Mac",
+		BackToSelf:  "Back to " + selfDevice,
 		Settings:    "Settings…",
 		Rescan:      "Rescan Displays",
 		Quit:        "Quit",

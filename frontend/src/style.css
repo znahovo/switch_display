@@ -104,11 +104,18 @@
 }
 
 /* 画布拖拽区：只有标题栏那一小条可以拖窗口，
-   否则整页都能拖会让列表操作变得难用。 */
+   否则整页都能拖会让列表操作变得难用。
+
+   Wails v3 不看 `-webkit-app-region`（那是 Electron/WKWebView 的老写法），
+   它由 JS 读元素上的 `--wails-draggable` 自定义属性决定能不能拖
+   （见 @wailsio/runtime 的 drag.ts isDraggableEvent）。两个都写上：
+   属性会继承，所以交互元素必须显式 no-drag 盖回。 */
 .drag-region {
   -webkit-app-region: drag;
+  --wails-draggable: drag;
 }
 
 .no-drag {
   -webkit-app-region: no-drag;
+  --wails-draggable: no-drag;
 }

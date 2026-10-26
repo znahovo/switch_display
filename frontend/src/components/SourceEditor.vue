@@ -16,6 +16,7 @@ import Field from "@/components/ui/Field.vue"
 import Input from "@/components/ui/Input.vue"
 import Select from "@/components/ui/Select.vue"
 import { eventToAccelerator, formatAccelerator, isModifierOnly } from "@/lib/accelerator"
+import { modifierHintKeys } from "@/lib/platform"
 import type { DisplayDTO, PresetDTO, SourceDTO } from "@/api"
 
 const props = defineProps<{
@@ -103,7 +104,7 @@ function onRecordKey(e: KeyboardEvent) {
   }
   const accel = eventToAccelerator(e)
   if (!accel) {
-    recordHint.value = t("sources.recordNeedModifier")
+    recordHint.value = t("sources.recordNeedModifier", { keys: modifierHintKeys })
     return
   }
   src.value.shortcut = accel

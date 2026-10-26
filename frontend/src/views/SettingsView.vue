@@ -99,7 +99,7 @@ async function importConfig() {
     const src = picked?.[0]
     if (!src) return
     const state = await store.importFrom(src)
-    message.value = t("settings.imported", { count: state.sources.length })
+    message.value = t("settings.imported", { count: state.sources?.length ?? 0 })
   } catch (e) {
     failed.value = true
     message.value = String(e)

@@ -32,6 +32,12 @@ type App struct {
 	Switcher       *switchapp.Service
 	Tray           *tray.Tray
 
+	// wailsApp 只用于「关窗口即退出」：两个平台的
+	// ApplicationShouldTerminateAfterLastWindowClosed / DisableQuitOnLastWindowClosed
+	// 都是 false/true（否则收进托盘就会变成退出），所以关掉最后一个窗口不会
+	// 自动结束进程，必须显式 Quit。
+	wailsApp *wails.App
+
 	hotkeys *platform.Hotkeys
 	events  *platform.Events
 	watcher *displayapp.Watcher
@@ -92,6 +98,7 @@ func Build(wailsApp *wails.App) (*App, error) {
 		Config:   config,
 		Switcher: switcher,
 		Tray:     trayView,
+		wailsApp: wailsApp,
 		hotkeys:  hotkeys,
 		events:   events,
 		log:      log,
@@ -156,12 +163,20 @@ func (a *App) AttachWindow(w *wails.WebviewWindow) {
 	}
 	a.Tray.SetWindow(w)
 	w.RegisterHook(events.Common.WindowClosing, func(e *wails.WindowEvent) {
-		// 用户关掉了「关闭时隐藏到菜单栏」时，红叉就是真退出——
-		// 否则窗口没了、托盘还在，用户会以为程序没关掉。
+		// 用户关掉了「关闭时隐藏到托盘」时，红叉就是真退出。
+		//
+		// 这里必须显式 Quit：两个平台都把「关掉最后一个窗口」的自动退出关掉了
+		// （macOS 的 ApplicationShouldTerminateAfterLastWindowClosed、
+		// Windows 的 DisableQuitOnLastWindowClosed），因为不关的话「收进托盘」
+		// 会变成「退出程序」。反过来，用户想要真退出时就得自己调 Quit，
+		// 否则窗口没了、进程还在后台隐身。
 		if !a.Config.Snapshot().Settings.HideToTrayOnClose {
+			if a.wailsApp != nil {
+				a.wailsApp.Quit()
+			}
 			return
 		}
-		// 默认语义是「收起来」：macOS 上关闭窗口后进程仍活着，
+		// 默认语义是「收起来」：关闭窗口后进程仍活着（托盘还在），
 		// 不拦截的话用户就再也找不到入口了。真正退出走托盘菜单。
 		e.Cancel()
 		a.Tray.HideWindow()

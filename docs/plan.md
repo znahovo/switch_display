@@ -36,6 +36,22 @@
 
 **→ 结论：内置 cgo 实现，用户不需要额外安装任何东西。** 这是你选的方案。
 
+### Windows 侧实测（同一份代码的 Windows 端口）
+
+在本机（Windows 11，NVIDIA RTX 4060，接 `Mi Monitor` + `P25A2G` 两台显示器）上实测：
+
+| 项 | 结果 |
+|---|---|
+| `EnumDisplayMonitors` + `GetMonitorInfoW` | ✅ 枚举出 `\\.\DISPLAY1` / `\\.\DISPLAY2` |
+| `EnumDisplayDevicesW` + `EDD_GET_DEVICE_INTERFACE_NAME` | ✅ 拿到设备接口路径 `\\?\DISPLAY#XMI27B1#5&187333d6&0&UID20738#{e6f07b5f-...}` |
+| 注册表 `Enum\<实例>\Device Parameters\EDID` | ✅ 两台都读到（384 / 256 字节）；`Default_Monitor` 这类伪实例没有 EDID，需容错 |
+| `GetPhysicalMonitorsFromHMONITOR` | ✅ 句柄是 0 和 1 —— **0 是合法值**，不能当失败判据 |
+| `GetVCPFeatureAndVCPFeatureReply` | ✅ 亮度 `0x10` 读到 100/100、90/100；输入源 `0x60` 读到 16/7（与 macOS 一致，`cur > max` 同样不可信） |
+| `SetVCPFeature` | ✅ 写成功（`WriteVCP` 走它） |
+| Alt 通道（`0xF4` @ I2C `0x50`） | ❌ Dxva2 无切从地址能力 → 返回 `ErrUnsupported`（ADR-009） |
+
+**→ 结论：Windows 用纯 `syscall`（`x/sys/windows` 的 `NewLazySystemDLL`）实现，零 cgo，不需要 MSVC。**
+
 技术来源：移植 [waydabber/m1ddc](https://github.com/waydabber/m1ddc)（MIT）的 `i2c.m` + `ioregistry.m` 逻辑到 Go 的 cgo 层。
 
 ---
@@ -56,7 +72,7 @@
 | `internal/domain/source/` | SignalSource 聚合 + 不变量、端口预设、Accelerator、`Repository` 接口 |
 | `internal/domain/switching/` | 领域服务：重试 / 确认窗口 / 四态结果判定 |
 | `internal/application/` | 用例编排：`switchapp` / `configapp` / `displayapp` / `dto` |
-| `internal/infrastructure/ddc/` | DDC/CI 适配：`darwin`（cgo，唯一 `import "C"` 处）、`windows`/`linux`（桩） |
+| `internal/infrastructure/ddc/` | DDC/CI 适配：`darwin`（cgo，唯一 `import "C"` 处）、`windows`（纯 syscall + Dxva2）、`linux`（桩） |
 | `internal/infrastructure/persistence/` | JSON 原子写 + `.bak` + 迁移 + 跨平台路径 |
 | `internal/infrastructure/platform/` | `hotkey` / `events` / `paths`（原生对话框、打开目录） |
 | `internal/presentation/` | `wailsservice`（薄适配）+ `tray`（菜单） |
@@ -319,10 +335,10 @@ flowchart LR
 
 | 平台 | 方案 | 状态 |
 |---|---|---|
-| Windows | `Dxva2.dll` / `MonitorConfiguration` + `SetVCPFeature`，显示器枚举用 `EnumDisplayMonitors` + `GetMonitorInfo`（`monitorDevice` 作稳定 ID） | 文件留桩，函数返回 `ErrUnsupported`；后续用 cgo 或 `syscall` 调 DLL |
+| Windows | `Dxva2.dll` 的 `GetPhysicalMonitorsFromHMONITOR` / `GetVCPFeatureAndVCPFeatureReply` / `SetVCPFeature`（纯 `syscall`，**不用 cgo**）；显示器枚举用 `EnumDisplayMonitors` + `GetMonitorInfoW`，稳定 ID 用 `EnumDisplayDevicesW` + `EDD_GET_DEVICE_INTERFACE_NAME` 拿到的**设备接口路径**（`\\?\DISPLAY#...\#{e6f07b5f-...}`），再从 `Enum\<实例>\Device Parameters\EDID` 读真实 EDID 解析厂商/型号/序列号/名字 | ✅ 已实现（`infrastructure/ddc/windows/{port,win32,edid}.go`，见 architecture.md ADR-008/009）。限制：Alt 通道（VCP 0xF4）返回 `ErrUnsupported`，Dxva2 无法切 I2C 从地址 |
 | Linux | `/dev/i2c-*` + `i2c-dev` ioctl（`I2C_RDWR`）直接发 DDC/CI 帧；或用 `ddcutil` 子进程兜底 | 文件留桩 |
 
-`main.go` 里所有依赖 macOS 的部分（托盘图标名、`MacOptions`）都要能编译过；用 build tag 隔离。
+`main.go` 里所有依赖 macOS 的部分（托盘图标名、`MacOptions`）都要能编译过；用 build tag 隔离。托盘图标已经按平台拆成 `icon_darwin.go`（`SetTemplateIcon`）与 `icon_desktop.go`（`SetIcon` + `SetDarkModeIcon`），因为 Wails v3 的 `SetTemplateIcon` 在 Windows/Linux 上是空实现。
 
 `go.mod` 里 `module changeme` → 改成 `module github.com/<you>/switch-display`（需要你确认模块名）。
 
@@ -345,7 +361,10 @@ flowchart LR
 }
 ```
 
-后端：零新增 Go 依赖（cgo 只链系统 framework）。
+后端：Go 依赖只有 `github.com/wailsapp/wails/v3` + `golang.org/x/sys`。
+`x/sys/windows` 从 indirect 提升为直接依赖，供 `infrastructure/ddc/windows` 调用
+`NewLazySystemDLL` / `registry`（Windows 侧零 cgo，不链任何第三方库）。
+cgo 只在 macOS 上使用，且只链系统 framework（IOKit/CoreFoundation）。
 
 ---
 
@@ -372,6 +391,7 @@ flowchart LR
 3. **domain/display + domain/source**（✅ 含单测）：纯 Go 聚合、值对象、不变量、端口接口、哨兵错误；单测全覆盖（无 cgo、无 GUI）。
 4. **domain/switching**（✅ 含单测）：重试/确认窗口/四态判定；用 fake `Clock` + fake `Port` 单测（覆盖 confirmed / mismatch / unconfirmed / failed）。
 5. **infrastructure/ddc/darwin**（✅ 已跑通本机 Mi Monitor）：cgo + `.m`（`IOAVServiceRead/WriteI2C`、IORegistry 枚举），实现 `display.Port`；`//go:build ddc_integration` 集成测试先跑通「列出 Mi Monitor」「读 0x10」「写 0x60」；同时放 `windows/stub.go`、`linux/stub.go` + `new_*.go` 工厂（保证交叉编译不炸）。
+   - **Windows 已从桩升级为真实实现**（✅ 见 §9 与 architecture.md ADR-008/009）：`windows/{port,win32,edid}.go` + `port_test.go`，删除 `stub.go`；本机两台显示器实测读写正常。
 6. **infrastructure/persistence**（✅ 含单测）：JSON 原子写 + `.bak` + 迁移 + 路径；临时目录单测。
 7. **application**（✅）：`switchapp` / `configapp` / `displayapp` + `dto`；用 fake 端口单测。
 8. **infrastructure/platform + presentation**（✅ 第二步完成 tray）：快捷键/事件适配、`wailsservice`、`tray`（SystemTray + template icon + 全量重建菜单 + Radio 打勾 + 关窗隐藏）；`wails3 generate bindings` 确认 TS 类型。
@@ -389,7 +409,7 @@ flowchart LR
 4. **「切回本机」这个隐藏源**（§8）要不要？我倾向要。
 5. **语言**：界面只做中文，还是中英双语（i18n 骨架先搭好）？
 6. **亮度/对比度/音量调节页**：v1 不做，对吧？（我按「不做」写，但 DDC 层已支持，加页面只是 UI 工作量）
-7. **Windows/Linux 桩代码**：现在就放 `_windows.go` / `_linux.go` 桩（保证交叉编译不炸），还是等真正上那台机器时再写？
+7. ~~**Windows/Linux 桩代码**~~ ✅ **已解决**：Windows 已从桩换成真实实现（见 §9）；Linux 仍留桩。
 
 ---
 
@@ -401,3 +421,4 @@ flowchart LR
 - **macOS 权限**：DDC 通过 IOKit，不需要辅助功能权限；但**全局快捷键**不需要权限（Wails 用 Carbon RegisterEventHotKey），**读其他 app 窗口**才需要。所以无需授权弹窗。
 - **App 签名/公证**：本地 dev 无所谓；分发给别人需要 Developer ID + notarization，cgo 二进制要一起签名（hardened runtime 下 IOKit 调用没问题）。
 - **Wails v3 还是 beta**：托盘/快捷键 API 有变动可能，代码里已按 beta.34 的实际签名写，升级时注意。
+- **Windows 的 DDC 限制**：① `SetVCPFeature` 走的是逻辑显示器句柄，**无法切 I2C 从地址**，所以 LG 用的 Alt 通道（VCP 0xF4 @ 0x50）在 Windows 上直接返回 `ErrUnsupported`；② Dxva2 **不回传原始回复帧**，`ReadBack.Raw` 恒为空（darwin 有）；③ 内屏/虚拟显示器没有 DDC 通道，`GetNumberOfPhysicalMonitorsFromHMONITOR` 返回 0，直接标 `Builtin=true`；④ 部分显卡驱动会让 `hPhysicalMonitor` 是 **0** 但合法，判断失败只能看返回值不能看句柄值；⑤ `Enum<实例>\Device Parameters\EDID` 对 `Default_Monitor` 这类伪实例不存在，读 EDID 必须容错。 ⑥ 打包清单 `build/windows/wails.exe.manifest` 用 `requestedExecutionLevel level="requireAdministrator"`：部分显卡/驱动组合下 Dxva2 的 I2C 通道不给非提权进程，表现为 `SetVCPFeature` 静默失败或 WebView2 起不来，所以默认要求管理员（双击会弹 UAC）。代价是提权后 Windows 的 UIPI 会阻止从资源管理器拖放文件进窗口。

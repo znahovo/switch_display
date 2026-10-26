@@ -64,11 +64,14 @@ export function toAppError(err: unknown): AppError {
   return fallback
 }
 
+// 绑定生成器把 Go 的切片返回值标成 `T[] | null`（nil 切片 → null）。
+// 前端不希望到处写 `?? []`，所以在这一层收口：这个文件本来就是唯一通道，
+// 把「Go 的 nil」翻译成「空数组」属于它该干的适配。
 export const api = {
   state: (): Promise<StateDTO> => DisplayService.State(),
-  listDisplays: (): Promise<DisplayDTO[]> => DisplayService.ListDisplays(),
-  presets: (): Promise<PresetDTO[]> => DisplayService.Presets(),
-  altPresets: (): Promise<PresetDTO[]> => DisplayService.AltPresets(),
+  listDisplays: async (): Promise<DisplayDTO[]> => (await DisplayService.ListDisplays()) ?? [],
+  presets: async (): Promise<PresetDTO[]> => (await DisplayService.Presets()) ?? [],
+  altPresets: async (): Promise<PresetDTO[]> => (await DisplayService.AltPresets()) ?? [],
   switchSource: (id: string): Promise<SwitchResultDTO> => DisplayService.SwitchSource(id),
   readCurrentInput: (displayId: string): Promise<InputDTO> =>
     DisplayService.ReadCurrentInput(displayId),

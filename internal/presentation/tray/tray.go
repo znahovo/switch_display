@@ -21,10 +21,15 @@ import (
 	"github.com/znahovo/switch-display/internal/domain/source"
 )
 
-// iconPNG 是 44×44 的黑/透明 template icon：菜单栏会按明暗自动反色。
+// iconPNG 是 44×44 的黑/透明图形。macOS 把它当 template image（按菜单栏
+// 明暗自动反色）；Windows / Linux 直接当位图画，所以还要一份白色的
+// iconWhitePNG 给深色任务栏用。选哪个由 icon_*.go 按平台决定。
 //
 //go:embed assets/icon.png
 var iconPNG []byte
+
+//go:embed assets/icon-white.png
+var iconWhitePNG []byte
 
 // ConfigReader 是托盘对配置用例的最小视图。
 type ConfigReader interface {
@@ -92,7 +97,7 @@ func (t *Tray) Start() error {
 		return fmt.Errorf("system tray unavailable")
 	}
 	tray := t.app.SystemTray.New()
-	tray.SetTemplateIcon(iconPNG)
+	applyIcon(tray)
 	tray.SetTooltip("Switch Display")
 	tray.OnClick(func() { t.ShowWindow() })
 	t.tray = tray

@@ -160,8 +160,12 @@ switch_display/
 │   │   │   │   ├── i2c.h / i2c.m    # IOAVServiceRead/WriteI2C、DDC/CI 帧拼装
 │   │   │   │   ├── registry.h/.m    # IORegistry 枚举 DCPAVServiceProxy / 匹配 framebuffer
 │   │   │   │   ├── port_test.go     # 烟雾测试（枚举/读回不崩，需真显示器）
-│   │   │   └── branches_test.go # 取消/未知显示器/不支持 等不碰硬件的分支
-│   │   │   ├── windows/stub.go      # 返回 display.ErrUnsupported（后续 Dxva2）
+│   │   │   │   └── branches_test.go # 取消/未知显示器/不支持 等不碰硬件的分支
+│   │   │   ├── windows/
+│   │   │   │   ├── port.go          # display.Port 实现：枚举 → 匹配 ID → Dxva2 读写（1 个 Mutex 串行化）
+│   │   │   │   ├── win32.go         # user32/dxva2 薄封装（EnumDisplayMonitors / PHYSICAL_MONITOR / VCP / 注册表 EDID）
+│   │   │   │   ├── edid.go          # 纯函数 EDID 解析（厂商码/产品码/序列号/描述符名）
+│   │   │   │   └── port_test.go     # 结构体布局 + deviceInstance + EDID 解析 + Alt 不支持（不碰硬件）
 │   │   │   └── linux/stub.go        # 返回 display.ErrUnsupported（后续 i2c-dev）
 │   │   ├── persistence/
 │   │   │   ├── jsonstore.go         # source.Repository 实现：原子写 + .bak + fsync + 导入导出
@@ -188,7 +192,12 @@ switch_display/
 │   │   └── tray/
 │   │       ├── tray.go              # SystemTray：菜单全量重建、打勾、点击转发、关窗隐藏
 │   │       ├── labels.go            # 托盘菜单文案（原生菜单拿不到 vue-i18n，自己一份）
-│   │       ├── assets/icon.png      # 44×44 黑/透明 template icon（go:embed）
+│   │       ├── icon_darwin.go       # macOS：SetTemplateIcon（按菜单栏明暗自动反色）
+│   │       ├── icon_desktop.go      # Windows/Linux：SetIcon + SetDarkModeIcon（Wails 的 SetTemplateIcon 在这两个平台是空实现）
+│   │       ├── self_darwin.go       # 英文文案里的本机说法 "This Mac"
+│   │       ├── self_other.go        # Windows/Linux 用 "This PC"
+│   │       ├── assets/icon.png      # 44×44 黑/透明图形（go:embed）
+│   │       ├── assets/icon-white.png# 同形状的白色版，给深色任务栏用
 │   │       ├── tray_test.go         # 菜单结构（顺序/Radio/打勾/禁用/语言）
 │   │       ├── switch_test.go       # busy 串行、失败不挪打勾、读回纠正打勾
 │   │       └── labels_test.go       # 中英文案 + 区域兜底
@@ -240,11 +249,11 @@ switch_display/
 | `domain/source` | 信号源聚合与不变量、端口预设、持久化**端口** | 不读文件、不注册快捷键 | ✅ 第一步 |
 | `domain/switching` | 切换的**规则**：重试次数、确认窗口、结果四态判定 | 不 sleep、不写 I2C、不发事件（通过注入的 Clock/Port） | ✅ 第一步 |
 | `application` | 用例编排与事务边界（一次保存 = 一次完整持久化 + 快捷键重建）、DTO 组装 | 不含业务规则判定 | ✅ 第一步 |
-| `infrastructure/ddc` | 用 macOS IOKit/IOAVService 真正读写 DDC/CI；Windows/Linux 桩 | 不决定"切哪个源" | ✅ darwin / ⬜ win+linux 桩已就位 |
+| `infrastructure/ddc` | 用 macOS IOKit/IOAVService、Windows Dxva2 真正读写 DDC/CI；Linux 桩 | 不决定"切哪个源" | ✅ darwin + windows / ⬜ linux 桩已就位 |
 | `infrastructure/persistence` | JSON 文件读写、原子替换、备份、版本迁移、路径解析 | 不校验业务规则（交由 domain） | ✅ 第一步 |
 | `infrastructure/platform` | Wails 事件/全局快捷键/时钟/日志 | 不含菜单结构定义 | ✅ 第一步 |
 | `presentation/wailsservice` | 暴露给前端的 API、DTO 映射、错误 code | 不含流程控制 | ✅ 第一步 |
-| `presentation/tray` | 菜单结构、图标、当前源打勾、点击转发、关窗隐藏 | 不直接调 ddc | ✅ 第二步 |
+| `presentation/tray` | 菜单结构、图标、当前源打勾、点击转发、关窗隐藏 | 不直接调 ddc | ✅ 第二步 / Windows 图标与文案已适配 |
 | `bootstrap` | 装配、生命周期、热插拔轮询、关窗拦截接线 | 不写业务分支 | ✅ 第二步 |
 
 ---
@@ -466,7 +475,7 @@ flowchart TB
     subgraph L1["① 先建基础设施"]
         direction LR
         S["persistence.NewJSONStore()<br/>路径解析 · 首次运行写默认配置"]
-        P["ddc.New()<br/>darwin: cgo · windows/linux: stub"]
+        P["ddc.New()<br/>darwin: cgo · windows: Dxva2 · linux: stub"]
         X["platform/{hotkey,events,paths}"]
     end
     B --> L1
@@ -505,8 +514,8 @@ flowchart TB
 
 | 想加什么 | 要动哪里 | 不用动什么 |
 |---|---|---|
-| **真正的 Windows DDC** | 新增 `infrastructure/ddc/windows/*.go` 替换 stub，保持 `display.Port` 签名 | domain / application / 前端 |
-| **真正的 Linux DDC** | 同上（`/dev/i2c-*` 或 `ddcutil` 包装） | 同上 |
+| **真正的 Windows DDC** | ✅ 已落地：`infrastructure/ddc/windows/{port,win32,edid}.go`，保持 `display.Port` 签名 | domain / application / 前端 |
+| **真正的 Linux DDC** | 同上（`/dev/i2c-*` 或 `ddcutil` 包装）；`linux/stub.go` 换成同构实现即可 | 同上 |
 | **亮度/对比度页** | `domain/display` 已有 VCP 值对象 → `displayapp` 加 ReadVCP/WriteVCP 用例 → `wailsservice` 暴露 → 前端加页 | 切换逻辑 |
 | **多显示器矩阵** | `Snapshot` 已有 `Displays[]`；`switching` 增加"组"的概念（新聚合 `SourceGroup`） | ddc 层 |
 | **新的输入源预设（投影仪/AV 功放）** | 只在 `domain/source/preset.go` 加表项 | 其它 |
@@ -539,6 +548,8 @@ flowchart TB
 | ADR-005 | 托盘菜单**全量重建**而非增量更新 | Wails v3 beta 的 `menu.Update` 行为不稳，重建成本极低（≤10 项） | 增量 SetChecked（beta 下易错） |
 | ADR-006 | 前端用 hash router | WebView `file://` 下 history 路由刷新会 404 | history 模式 |
 | ADR-007 | 保存配置时"快捷键部分失败不回滚配置" | 用户意图优先，丢配置比丢绑定严重 | 全量回滚（用户白填） |
+| ADR-008 | Windows DDC 用 **Dxva2.dll 的 `GetPhysicalMonitorsFromHMONITOR` / `SetVCPFeature`**，DisplayID 用**设备接口路径**（`\\?\DISPLAY#...\#{e6f07b5f-...}`） | 纯 syscall、零 cgo（满足 R6）；设备接口路径由 `EnumDisplayDevices` + `EDD_GET_DEVICE_INTERFACE_NAME` 给出，跨重启/换口稳定，且能直接映射到注册表 `Enum\<实例>\Device Parameters\EDID` 读取真实 EDID。`\\.\DISPLAY1` 这种 GDI 名会随接线顺序变，不能当 ID | 用 GDI 设备名（不稳定）；用 SetupAPI 自己匹配（还得再回到 HMONITOR 拿物理监视器句柄，多做一次枚举） |
+| ADR-009 | Windows 上 **Alt 通道（VCP 0xF4）返回 `ErrUnsupported`**，不降级写 0x51 | Dxva2 的 `SetVCPFeature` 只暴露逻辑显示器句柄，无法切换 I2C 从地址（0x50）；硬写会发到错误的通道上，比明确报"不支持"更糟。`switching.writeWithRetry` 对 `ErrUnsupported` 原样上抛，前端能准确提示 | 静默忽略 Alt（用户以为切了，实际没切） |
 
 ---
 
@@ -612,3 +623,4 @@ flowchart TB
 | 2026-10-25 | **与 m1ddc 的行为差异（重要）**：读请求的校验和必须包含 `inputAddress` —— `request[3] = 0x6E ^ addr ^ request[0] ^ request[1] ^ request[2]`。m1ddc 的 `prepareDDCRead()` 漏了 addr，导致本机 Mi Monitor 读回纯噪声（`get contrast` 得到 50739）。修正后回复帧规整（亮度/对比度 cur≤max，输入源 cur=18）。此差异记录在 `internal/infrastructure/ddc/darwin/i2c.m` 注释中 | infrastructure/ddc |
 | 2026-10-26 | **补齐后端 Go 单测并新增 §11 测试策略**：14 个包全部有用例（新增/扩写 `domain/display`、`application/{dto,configapp,displayapp,switchapp}`、`infrastructure/{ddc,ddc/darwin(branches),persistence(migrate),platform(+hotkey)}`、`presentation/{tray(+switch,+labels),wailsservice(+extra,+errors)}`、`bootstrap`）。覆盖 0% → 100% 的包 3 个（display / ddc / bootstrap），tray 10%→70%、wailsservice 53%→96%。测试暴露并修掉两个真 bug：① `tray.AddRadio(label, busy)` 第二参是 checked 不是 enabled（busy 时源项没被禁用）；② `displayapp.Refresh` 返回内部切片（调用方改名会污染缓存）。新增 §11 记录分层测试策略与 5 条约定（fake clock 必须返回 `context.Canceled` 等），原 §11/§12 顺延为 §12/§13 | 全部测试 + docs |
 | 2026-10-26 | **前端 UI 改版**：导航从顶部横排改为 **左侧可折叠 sidebar**（宽度 204px/60px，折叠态持久化到 `localStorage["switch-display:nav-collapsed"]`，底部放折叠与语言切换）；「添加信号源」表单从列表下方挪到**列表上方**（`SourcesView` 改为 `editingId` 单编辑器模式，新增行立刻进入编辑）；新增 5 个结构组件把视觉对齐变成结构保证：`PageShell`（标题/说明/操作区）、`SettingRow`（设置项）、`Field`（label+控件+hint）、`Badge`（6 变体徽标）、`Checkbox`；`SourceEditor` 新增/编辑共用（两列网格 + 快捷键录制遮罩）；切换台卡片重排（名称/副信息固定行高 → 卡片等高，切换按钮固定 74px 宽） | 前端 + docs |
+| 2026-10-27 | **Windows 平台落地（DDC + 表现层）**：① `infrastructure/ddc/windows/` 用 **Dxva2.dll + user32 + 注册表** 实现真实 DDC/CI（`port.go` 端口实现、`win32.go` Win32 薄封装、`edid.go` 纯函数 EDID 解析、`port_test.go` 不碰硬件的用例），删除 `stub.go`；DisplayID 用**设备接口路径**（ADR-008），Alt 通道返回 `ErrUnsupported`（ADR-009）。② 表现层按平台拆分：`icon_darwin.go`（`SetTemplateIcon`）与 `icon_desktop.go`（`SetIcon` + `SetDarkModeIcon`，新增 `assets/icon-white.png`）解决 Windows 上 template icon 是空实现导致**托盘无图标**；`self_darwin.go`/`self_other.go` 让英文文案在 Windows 说 "This PC" 而不是 "This Mac"；`main.go` 加 `WindowsOptions{DisableQuitOnLastWindowClosed: true}`（否则 `HideToTrayOnClose=false` 时关窗会退进程）；`App.vue` 的 40px 拖动区按平台隐藏（Windows 有原生标题栏）。③ `build/windows/wails.exe.manifest` 的 `requestedExecutionLevel` 由 `asInvoker` 改为 **`requireAdministrator`**（DDC 的 I2C 通道在部分驱动下不给非提权进程，`SetVCPFeature` 静默失败）；④ 新增 ADR-008/009、更新 §3 目录树、§4 状态列、§8 扩展指引、`docs/plan.md` §9/§14 | infrastructure/ddc + presentation/tray + main.go + build/windows + 前端 + docs |

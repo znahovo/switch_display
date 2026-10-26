@@ -3,8 +3,9 @@
 //
 // 为什么是左侧栏而不是顶部横排：这个应用只有三个页面，但「切换台」是常驻
 // 主操作，竖向排列能给每个入口配图标 + 文字，标题栏也不必再挤一层。
-// 窗口用了 MacTitleBarHiddenInset，红绿灯浮在左上角，所以侧栏顶部留 40px
-// 拖动区，红绿灯正好落在侧栏里。
+// 窗口在 macOS 上用了 MacTitleBarHiddenInset，红绿灯浮在左上角，所以侧栏
+// 顶部留 40px 拖动区，红绿灯正好落在侧栏里；Windows 保留原生标题栏（关窗
+// 行为按系统习惯走），那 40px 就只剩一块空白，所以按平台隐藏。
 import { onMounted, onUnmounted, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
 import { useRoute, useRouter } from "vue-router"
@@ -17,6 +18,7 @@ import {
   Settings as SettingsIcon,
 } from "lucide-vue-next"
 import { detectLocale, setLocale, type Locale } from "@/locales"
+import { isMac } from "@/lib/platform"
 import { onEvent, EventName } from "@/api"
 import { useAppStore } from "@/stores/app"
 
@@ -80,8 +82,10 @@ function toggleLocale() {
       class="flex shrink-0 flex-col border-r border-border/70 bg-muted/35 transition-[width] duration-150"
       :class="collapsed ? 'w-[60px]' : 'w-[204px]'"
     >
-      <!-- 红绿灯区域：只负责拖动，不放内容 -->
-      <div class="drag-region h-10 shrink-0" />
+      <!-- 红绿灯区域：只负责拖动，不放内容（仅 macOS 有红绿灯） -->
+      <div v-if="isMac" class="drag-region h-10 shrink-0" />
+      <!-- 其它平台没有红绿灯，用一小段内边距代替那 40px -->
+      <div v-else class="h-2 shrink-0" />
 
       <nav class="no-drag flex flex-col gap-0.5 px-2">
         <RouterLink

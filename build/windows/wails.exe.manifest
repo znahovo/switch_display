@@ -12,10 +12,17 @@
             <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">permonitorv2,permonitor</dpiAwareness> <!-- falls back to per-monitor if per-monitor v2 is not supported -->
         </asmv3:windowsSettings>
     </asmv3:application>
+    <!--
+        requireAdministrator：DDC/CI 走 Dxva2 的 I2C 通道，在部分显卡/驱动组合下
+        需要管理员权限才能访问（否则 SetVCPFeature 静默失败或 WebView2 初始化异常）。
+        代价是双击就会弹 UAC；如果将来想避免提权，需要改成「非提权运行 + 单独的
+        提权辅助进程」模式。注意：提权后 Windows 不允许拖放（Drag & Drop）从
+        资源管理器进入窗口，这是系统的 UIPI 限制，与本程序无关。
+    -->
     <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
         <security>
             <requestedPrivileges>
-                <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+                <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
             </requestedPrivileges>
         </security>
     </trustInfo>

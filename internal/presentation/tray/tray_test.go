@@ -2,6 +2,8 @@ package tray
 
 import (
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 
 	wails "github.com/wailsapp/wails/v3/pkg/application"
@@ -9,6 +11,21 @@ import (
 	"github.com/znahovo/switch-display/internal/domain/display"
 	"github.com/znahovo/switch-display/internal/domain/source"
 )
+
+// renderedAccel 给出 Wails 读完 accelerator 后 GetAccelerator 返回的字符串。
+//
+// 存盘格式是跨平台的（"Cmd+Option+9"），但 Wails 会按运行平台把修饰键重写成
+// 本地名字并按字母序排列：macOS 是 "Cmd+Option+9"，Windows / Linux 把
+// Cmd→Ctrl、Option→Alt，排序后变成 "Alt+Ctrl+9"。所以断言不能硬编码 macOS
+// 的写法，否则这个用例只能在 macOS 上过。
+func renderedAccel(shortcut string) string {
+	parts := strings.Split(shortcut, "+")
+	key := parts[len(parts)-1]
+	if runtime.GOOS == "darwin" {
+		return "Cmd+Option+" + key
+	}
+	return "Alt+Ctrl+" + key
+}
 
 func TestLabelsForPicksChineseByPrefix(t *testing.T) {
 	// 显式设置环境变量：判断空 lang 的兜底行为时不能依赖跑测试的机器
@@ -190,9 +207,13 @@ func TestBuildMenuAddsBackToSelfOnlyWhenConfigured(t *testing.T) {
 	other := source.SignalSource{ID: "s2", Name: "PC",
 		Input: display.InputValue{VCP: display.VCPInputSource, Value: 15}}
 
-	// 未标记本机源：不出现「Back to This Mac」。
+	// 文案按平台变（macOS 是 "Back to This Mac"，其它平台是 "Back to This PC"），
+	// 所以断言用 labelsFor 取，而不是硬编码——否则这个用例只能在 macOS 上过。
+	backToSelf := labelsFor("en").BackToSelf
+
+	// 未标记本机源：不出现「切回本机」。
 	tr := newTestTray(snapshotWith(t, []source.SignalSource{self, other}, nil))
-	if tr.buildMenu().FindByLabel("Back to This Mac") != nil {
+	if tr.buildMenu().FindByLabel(backToSelf) != nil {
 		t.Error("back-to-self should be hidden when unset")
 	}
 
@@ -200,12 +221,12 @@ func TestBuildMenuAddsBackToSelfOnlyWhenConfigured(t *testing.T) {
 	tr = newTestTray(snapshotWith(t, []source.SignalSource{self, other}, func(s *source.Settings) {
 		s.SelfSourceID = "s1"
 	}))
-	item := tr.buildMenu().FindByLabel("Back to This Mac")
+	item := tr.buildMenu().FindByLabel(backToSelf)
 	if item == nil {
 		t.Fatal("back-to-self missing")
 	}
-	if got := item.GetAccelerator(); got != "Cmd+Option+9" {
-		t.Errorf("accelerator = %q, want Cmd+Option+9", got)
+	if got, want := item.GetAccelerator(), renderedAccel("Cmd+Option+9"); got != want {
+		t.Errorf("accelerator = %q, want %q", got, want)
 	}
 	if item.IsRadio() {
 		t.Error("back-to-self is a plain item, not part of the radio group")
@@ -219,7 +240,7 @@ func TestBuildMenuDanglingSelfSourceIsIgnored(t *testing.T) {
 		{ID: "s1", Name: "A", Input: display.InputValue{Value: 15}},
 	}, func(s *source.Settings) { s.SelfSourceID = "ghost" }))
 
-	if tr.buildMenu().FindByLabel("Back to This Mac") != nil {
+	if tr.buildMenu().FindByLabel(labelsFor("en").BackToSelf) != nil {
 		t.Error("dangling self source should be skipped")
 	}
 }
@@ -236,8 +257,8 @@ func TestBuildMenuAcceleratorOnlyWhenSet(t *testing.T) {
 	bound := plain
 	bound.Shortcut = "Cmd+Option+2"
 	tr = newTestTray(snapshotWith(t, []source.SignalSource{bound}, nil))
-	if got := tr.buildMenu().FindByLabel("A (DP1)").GetAccelerator(); got != "Cmd+Option+2" {
-		t.Errorf("accelerator = %q, want Cmd+Option+2", got)
+	if got, want := tr.buildMenu().FindByLabel("A (DP1)").GetAccelerator(), renderedAccel("Cmd+Option+2"); got != want {
+		t.Errorf("accelerator = %q, want %q", got, want)
 	}
 }
 
