@@ -50,6 +50,9 @@ const (
 	EventStateChanged = "state:changed"
 	// EventOpenSettings 由托盘「设置…」发出，前端收到后跳到设置页。
 	EventOpenSettings = "dialogs:open-settings"
-	// EventShowView 请求前端显示某个视图，payload 为视图名（"switcher"/"sources"/"settings"）。
+	// EventShowView 请求前端显示某个视图，payload 为视图名（"switcher"/"sources"/"share"/"settings"）。
 	EventShowView = "ui:show-view"
+	// EventLinkChanged 在共享状态、对端列表或 core 状态变化时发出，
+	// payload 为 nil（前端收到后重新拉 LinkService.State）。
+	EventLinkChanged = "link:changed"
 )

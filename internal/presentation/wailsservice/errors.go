@@ -3,6 +3,7 @@ package wailsservice
 import (
 	"errors"
 
+	"github.com/znahovo/switch-display/internal/application/linkapp"
 	"github.com/znahovo/switch-display/internal/domain/display"
 	"github.com/znahovo/switch-display/internal/domain/source"
 )
@@ -61,6 +62,20 @@ func newError(err error, op string) *Error {
 		code, msg = "unsupported", "this display does not support the requested DDC command"
 	case errors.Is(err, display.ErrWriteFailed):
 		code, msg = "write_failed", "the display did not accept the DDC/CI write"
+	case errors.Is(err, linkapp.ErrNoCore):
+		code, msg = "deskflow_missing", "Deskflow is not installed; install Deskflow to share mouse and keyboard"
+	case errors.Is(err, linkapp.ErrPeerNotFound):
+		code, msg = "peer_not_found", "the device is no longer visible on the network"
+	case errors.Is(err, linkapp.ErrNoIdentity):
+		code, msg = "deskflow_cert", "the local Deskflow certificate is unavailable; restart the app to regenerate it"
+	case errors.Is(err, linkapp.ErrBusy):
+		code, msg = "link_busy", "sharing is already active; stop it first"
+	case errors.Is(err, linkapp.ErrNotPaired):
+		code, msg = "not_paired", "this device is not paired yet"
+	case errors.Is(err, linkapp.ErrInvalidName):
+		// 与信号源的 invalid_name 分开：两者长度上限不同（64 vs 32），
+		// 共用一个 code 会让前端翻出一条上限对不上的提示。
+		code, msg = "invalid_device_name", "device name is required (max 64 characters)"
 	}
 
 	return &Error{Code: code, Op: op, Message: msg}

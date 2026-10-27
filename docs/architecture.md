@@ -133,8 +133,15 @@ switch_display/
 │   │   │   ├── source.go            # SignalSource 聚合根 + 不变量（New/Validate/Rename）
 │   │   │   ├── preset.go            # 输入口预设表（DP1=15 … LG alt 表）+ MatchPreset
 │   │   │   └── repository.go        # Repository 接口 + Snapshot / Settings + Snapshot.Validate
-│   │   └── switching/
-│   │       └── service.go           # 领域服务：Outcome 四态 + Clock + Switch（写-等-读-判定）
+│   │   ├── switching/
+│   │   │   └── service.go           # 领域服务：Outcome 四态 + Clock + Switch（写-等-读-判定）
+│   │   └── link/                    # 局域网共享（Deskflow）领域模型
+│   │       ├── link.go              # Role / Peer / Self / 设备 ID 与名称清洗 / ComputerNameFor
+│   │       ├── message.go           # 信令报文（announce/pair_request/pair_accept/pair_reject/bye）+ 编解码
+│   │       ├── settings.go          # Snapshot / Settings / TrustedPeer + Repository 端口
+│   │       ├── runtime.go           # RuntimeStatus / State* 常量 / ServerSpec / ClientSpec
+│   │       ├── errors.go            # ErrInvalidDeviceID / ErrInvalidRole / ErrInvalidMessage …
+│   │       └── link_test.go         # 领域不变量 + 报文往返
 │   │
 │   ├── application/                 # ── 应用层（用例 / 编排） ──
 │   │   ├── port.go                  # EventPublisher / HotkeyRegistrar / Clock / Logger + 事件名
@@ -144,8 +151,13 @@ switch_display/
 │   │   ├── configapp/service_test.go
 │   │   ├── displayapp/service.go    # Refresh / List / Probe + Watcher（热插拔轮询）
 │   │   ├── displayapp/service_test.go
+│   │   ├── linkapp/
+│   │   │   ├── ports.go             # Transport / Core 两个端口（发现 + Deskflow 进程）
+│   │   │   ├── service.go           # 编排：发现 → 配对握手 → 启停 core → 状态汇总
+│   │   │   └── service_test.go      # fake Transport/Core/Repo：配对、拒绝、停止、解绑
 │   │   └── dto/
 │   │       ├── dto.go               # 面向前端的扁平 DTO
+│   │       ├── link.go              # LinkStateDTO / PeerDTO / TrustedPeerDTO / CoreStatusDTO …
 │   │       ├── convert.go           # 领域 ↔ DTO 双向映射
 │   │       └── convert_test.go
 │   │
@@ -167,11 +179,34 @@ switch_display/
 │   │   │   │   ├── edid.go          # 纯函数 EDID 解析（厂商码/产品码/序列号/描述符名）
 │   │   │   │   └── port_test.go     # 结构体布局 + deviceInstance + EDID 解析 + Alt 不支持（不碰硬件）
 │   │   │   └── linux/stub.go        # 返回 display.ErrUnsupported（后续 i2c-dev）
+│   │   ├── link/                    # 局域网共享的基础设施
+│   │   │   ├── discovery/
+│   │   │   │   ├── udp.go           # UDP 广播 + 单播信令 + 对端表 + TTL 过期
+│   │   │   │   ├── socket_posix.go  # SO_REUSEADDR/SO_REUSEPORT/SO_BROADCAST
+│   │   │   │   ├── socket_windows.go# Windows：只有 SO_REUSEADDR（无 SO_REUSEPORT）
+│   │   │   │   ├── reuseport_darwin.go # mac：syscall.SO_REUSEPORT
+│   │   │   │   ├── reuseport_linux.go  # Linux：x/sys/unix.SO_REUSEPORT（syscall 里没有）
+│   │   │   │   ├── reuseport_other.go  # 其它平台退化为 no-op
+│   │   │   │   ├── broadcast.go     # 各网卡定向广播地址计算（跨平台）
+│   │   │   │   └── udp_test.go      # loopback 双 Transport 互换 announce
+│   │   │   └── deskflow/
+│   │   │       ├── locate.go        # 找 deskflow-core（三平台候选路径 + PATH + 缓存）
+│   │   │       ├── cert.go          # 自签 PEM 生成 / 指纹读取 / 过期重建
+│   │   │       ├── config.go        # deskflow.conf（INI）+ 布局文件 + 指纹信任库
+│   │   │       ├── process.go       # 子进程拉起 / 日志泵 / 端口就绪探测 / 停止
+│   │   │       ├── engine.go        # 端口实现：StartServer / StartClient / Status
+│   │   │       ├── terminate_posix.go / terminate_windows.go
+│   │   │       ├── config_test.go   # INI 键、布局双向性、信任库格式
+│   │   │       ├── cert_test.go     # PEM 段顺序、CN、有效期、幂等
+│   │   │       └── process_test.go  # 假 core 脚本：启停/退出码/日志分类
 │   │   ├── persistence/
 │   │   │   ├── jsonstore.go         # source.Repository 实现：原子写 + .bak + fsync + 导入导出
 │   │   │   ├── migrate.go           # 配置版本迁移 + 默认值补齐
 │   │   │   ├── paths.go             # os.UserConfigDir()/switch-display/config.json
+│   │   │   ├── linkpaths.go         # 同目录下的 link.json 与 deskflow/
+│   │   │   ├── linkstore.go         # link.Repository 实现（损坏一律回落空快照）
 │   │   │   ├── jsonstore_test.go    # 往返/备份/坏文件/导入导出
+│   │   │   ├── linkstore_test.go    # 往返/缺失/损坏回落/.bak
 │   │   │   └── migrate_test.go      # 版本迁移 + 默认值 + context 取消
 │   │   └── platform/                # 端口 → Wails/系统 的薄转发
 │   │       ├── events.go            # EventPublisher → Wails app.Event.Emit
@@ -185,6 +220,7 @@ switch_display/
 │   ├── presentation/                # ── 表现层（Wails 绑定 + 托盘） ──
 │   │   ├── wailsservice/
 │   │   │   ├── service.go           # DisplayService：薄适配，只做 DTO 映射与启动钩子
+│   │   │   ├── linkservice.go       # LinkService：共享页的薄适配（同样只映射 DTO）
 │   │   │   ├── errors.go            # 领域错误 → 稳定 error code（前端 i18n 用）
 │   │   │   ├── service_test.go      # 端到端接线（fake Port + 临时配置目录）
 │   │   │   ├── service_extra_test.go# 警告一次性消费 / 导入导出 / 错误映射
@@ -212,11 +248,13 @@ switch_display/
 │   └── src/
 │       ├── api/index.ts             # 包一层 bindings：组件不直接调 $Call
 │       ├── stores/app.ts            # Pinia：显示器 + 信号源 + 设置（单一 store）
-│       ├── router/index.ts          # hash 路由：/ /sources /settings（ADR-006）
+│       ├── stores/link.ts           # Pinia：共享状态（发现到的对端 / core 状态 / 配对动作）
+│       ├── router/index.ts          # hash 路由：/ /sources /share /settings（ADR-006）
 │       ├── App.vue                  # 左侧可折叠导航栏（宽度持久化到 localStorage）+ RouterView
 │       ├── views/
 │       │   ├── SwitcherView.vue     # 切换台：点卡片即切
 │       │   ├── SourcesView.vue      # 信号源增删改 + 快捷键录制（整体提交）
+│       │   ├── ShareView.vue        # 共享键鼠：自发现对端 → 选主机 → 配对 → core 状态
 │       │   └── SettingsView.vue     # 语言 / 关窗隐藏 / 读回确认 / 本机源 / 导入导出
 │       ├── components/
 │       │   ├── PageShell.vue         # 页面骨架：标题 + 说明 + 右上操作区（三页统一起点）
@@ -239,6 +277,7 @@ switch_display/
 │           └── accelerator.ts       # KeyboardEvent.code → accelerator 字符串 + ⌘⌥1 显示
 └── docs/
     ├── plan.md                      # 需求与实施方案（会随需求演进）
+    ├── deskflow-integration.md      # 共享键鼠：Deskflow 调研结论 + 设计 + 实施进度
     ├── architecture.md              # ← 本文件：架构唯一事实来源
     └── README.md                    # 文档索引 + 维护约定
 ```
@@ -256,7 +295,11 @@ switch_display/
 | `infrastructure/ddc` | 用 macOS IOKit/IOAVService、Windows Dxva2 真正读写 DDC/CI；Linux 桩 | 不决定"切哪个源" | ✅ darwin + windows / ⬜ linux 桩已就位 |
 | `infrastructure/persistence` | JSON 文件读写、原子替换、备份、版本迁移、路径解析 | 不校验业务规则（交由 domain） | ✅ 第一步 |
 | `infrastructure/platform` | Wails 事件/全局快捷键/时钟/日志 | 不含菜单结构定义 | ✅ 第一步 |
-| `presentation/wailsservice` | 暴露给前端的 API、DTO 映射、错误 code | 不含流程控制 | ✅ 第一步 |
+| `domain/link` | 共享的设备身份（设备 ID/展示名/Deskflow 主机名）、信令报文、配对记录与**持久化端口**、运行状态值对象 | 不碰 socket、不启动进程、不读写 Deskflow 文件 | ✅ 第三步 |
+| `application/linkapp` | 编排「发现 → 配对握手 → 写信任库/布局 → 启停 core」，聚合成一个状态 DTO | 不含密钥/证书的字节级细节（在 infrastructure）；不直接收发 UDP | ✅ 第三步 |
+| `infrastructure/link/discovery` | UDP 广播、单播信令收发、对端表与 TTL 过期 | 不理解配对语义（回调给用例层） | ✅ 第三步 |
+| `infrastructure/link/deskflow` | 定位 `deskflow-core`、自签证书与指纹、写 INI/布局/信任库、子进程生命周期与日志 | 不决定「谁是主机」（用例层决定） | ✅ 第三步 |
+| `presentation/wailsservice` | 暴露给前端的 API、DTO 映射、错误 code | 不含流程控制 | ✅ 第一步（第三步加 `LinkService`） |
 | `presentation/tray` | 菜单结构、图标、当前源打勾、点击转发、关窗隐藏 | 不直接调 ddc | ✅ 第二步 / Windows 图标与文案已适配 |
 | `bootstrap` | 装配、生命周期、热插拔轮询、关窗拦截接线 | 不写业务分支 | ✅ 第二步 |
 
@@ -324,8 +367,72 @@ const (
     EventStateChanged   = "state:changed"
     EventOpenSettings   = "dialogs:open-settings"  // 托盘「设置…」→ 前端跳设置页
     EventShowView       = "ui:show-view"           // payload: 目标路由路径
+    EventLinkChanged    = "link:changed"           // 共享状态/对端表/core 状态变了
 )
+
+// ── internal/domain/link/settings.go ─────────────────────────────
+type Repository interface {
+    Load(ctx context.Context) (Snapshot, error)
+    Save(ctx context.Context, s Snapshot) error
+    Path() string
+}
+
+// ── internal/application/linkapp/ports.go ────────────────────────
+// Transport 是发现 + 信令端口（infrastructure/link/discovery 实现）。
+type Transport interface {
+    SetSelf(s link.Self)
+    Self() link.Self
+    Peers() []link.Peer
+    Peer(id string) (link.Peer, bool)
+    Send(m link.Message, to netip.AddrPort) error
+    Broadcast(m link.Message) error
+    Listen(port int) error
+    Run(ctx context.Context)
+    Close() error
+    SetHandlers(onMessage func(m link.Message, from netip.AddrPort), onPeer func(p link.Peer))
+}
+
+// Core 是 Deskflow core 进程端口（infrastructure/link/deskflow 实现）。
+type Core interface {
+    Locate() (string, error)
+    ResetFinder()
+    Dir() string
+    EnsureIdentity() (fingerprint string, regenerated bool, err error)
+    StartServer(ctx context.Context, spec link.ServerSpec) error
+    StartClient(ctx context.Context, spec link.ClientSpec) error
+    Stop(ctx context.Context) error
+    Status() link.RuntimeStatus
+    LogTail() []string
+}
 ```
+
+**`link.json`（磁盘格式，与 `config.json` 平级、独立文件）**：
+
+```jsonc
+{
+  "version": 1,
+  "deviceId": "0123456789abcdef0123456789abcdef",
+  "deviceName": "MacBook Pro",
+  "lastHostId": "",
+  "trusted": [
+    { "id": "fedcba98…", "name": "工作室 PC",
+      "fingerprint": "v2:sha256:<64 位小写 hex>", "pairedAt": "2026-10-27T13:00:00Z" }
+  ]
+}
+```
+
+> **为什么单独一个文件**：这些都是运维态（设备 ID、配对记录），丢了只是重新配一次；
+> 塞进 `config.json` 就得升 version 触发迁移，代价与收益不成比例。
+> 因此 `LinkStore.Load` 遇到损坏一律回落空快照而不报错。
+
+**Deskflow 侧文件（全部在 `<配置目录>/deskflow/`）**：
+
+| 文件 | 作用 |
+|---|---|
+| `deskflow.conf` | QSettings INI：`[core] coreMode/computerName/port`、`[client] remoteHost`、`[server] externalConfig`、`[security] tlsEnabled/checkPeerFingerprints/certificate`、以及每个主机一行 `[computer_<name>] name=<name>` |
+| `deskflow-server.conf` | server 布局，Deskflow 自有语法：`section: links` / `\t<from>:` / `\t\t<side> = <to>` / `end` |
+| `tls/deskflow.pem` | 自签证书 + 私钥（同文件，RSA 2048，CN=Deskflow，365 天） |
+| `tls/trusted-clients` / `tls/trusted-servers` | 指纹信任库，每行 `v2:sha256:<hex>`；**空则删文件**（Deskflow 对空文件报错） |
 
 **配置结构（磁盘格式，`Snapshot` 的 wire 形态）**：
 
@@ -512,6 +619,50 @@ flowchart TB
     T --> R
 ```
 
+### 7.4 共享键鼠配对（自发现 → 零点击配对 → 启停 core）
+
+> 这张图回答：用户点了「作为主机」之后，两台机器各自发生了什么。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as 用户（A 机）
+    participant FA as A: ShareView
+    participant LA as A: linkapp.Service
+    participant DA as A: discovery (UDP 24801)
+    participant DB as B: discovery (UDP 24801)
+    participant LB as B: linkapp.Service
+    participant KA as A: deskflow.Engine
+    participant KB as B: deskflow.Engine
+
+    Note over DA,DB: 每 2 秒互发 announce（ID/名称/角色/指纹/端口）<br/>对端表 TTL 7 秒，10 秒判离线
+    DA->>DB: announce
+    DB->>DA: announce
+    DA-->>LA: onPeer → Emit("link:changed") → 前端出现 B
+    U->>FA: 点「作为主机」（B 卡片）
+    FA->>LA: HostWith(peerIdB)
+    LA->>LA: 前置检查（B 在线 / core 存在 / 证书就绪 / core 空闲）
+    LA->>DB: pair_request{role=server, fp=A 指纹}
+    Note over LB: 角色规则：报文 role 是对方想担任的，本机取另一个
+    LB->>DA: pair_accept{role=client, fp=B 指纹}
+    LB->>LB: rememberTrusted(A) → link.json
+    LB->>KB: StartClient{ServerHost=来源 IP, TrustedServers=A 指纹}
+    DA-->>LA: pair_accept（A 侧）
+    LA->>LA: rememberTrusted(B) → link.json
+    LA->>KA: StartServer{Neighbors=[B], TrustedClients=B 指纹}
+    KA->>KA: 写 layouts + 信任库 + deskflow.conf<br/>deskflow-core server -s deskflow.conf --new-instance
+    KB->>KB: 写信任库 + deskflow.conf<br/>deskflow-core client -s deskflow.conf --new-instance
+    KB->>KA: TLS 连接（24800，双方互验证书指纹）
+    Note over KA,KB: server 侧改布局要重启 core（reload 只认信号）
+```
+
+**四条必须守住的规则**（每条都来自 Deskflow 的实际行为，改了会静默失效）：
+
+1. **主机名由设备 ID 派生**（`sd-<id 前 10 位>`）：布局文件与 client 的 `computerName` 必须一致，而两端唯一共享的标识是设备 ID。
+2. **布局必须双向**：只写 `A right = B`，鼠标过去回不来。
+3. **布局里出现的每个名字都要在 `deskflow.conf` 里有 `[computer_<name>] name=<name>`**，否则 `unknown computer name` → core 以退出码 4 结束。
+4. **信任库不能是空文件**：Deskflow 对「文件存在但 0 条指纹」直接 `LOG_ERR` 拒绝连接，所以为空时要删文件。
+
 ---
 
 ## 8. 扩展指引（"方便扩展"的具体落点）
@@ -523,7 +674,9 @@ flowchart TB
 | **亮度/对比度页** | `domain/display` 已有 VCP 值对象 → `displayapp` 加 ReadVCP/WriteVCP 用例 → `wailsservice` 暴露 → 前端加页 | 切换逻辑 |
 | **多显示器矩阵** | `Snapshot` 已有 `Displays[]`；`switching` 增加"组"的概念（新聚合 `SourceGroup`） | ddc 层 |
 | **新的输入源预设（投影仪/AV 功放）** | 只在 `domain/source/preset.go` 加表项 | 其它 |
-| **新事件** | `application` 里 Emit + `docs/architecture.md` 事件表 + 前端 `api/events.ts` | — |
+| **新事件** | `application` 里 Emit + `docs/architecture.md` 事件表 + 前端 `api/index.ts` 的 `EventName` | — |
+| **共享键鼠换后端（如 Synergy/Barrier）** | `infrastructure/link/deskflow/` 换成同签名的 `Core` 实现（`application/linkapp/ports.go` 的接口不变） | domain / application / 前端 |
+| **共享布局支持多机/上下排** | `domain/link/runtime.go` 的 `ServerSpec.Neighbors` 扩成带方位的结构 + `deskflow.HorizontalLinks` 换成通用生成 | domain 的报文与配对逻辑、前端发现列表 |
 | **加 i18n** | 前端 `lib/i18n`；后端错误码→文案在 `presentation/wailsservice/errors.go` | domain |
 
 **新增模块的判定口诀**：只要它"知道真实世界的一个规则"，进 `domain`；只要它"和外部世界对话"，进 `infrastructure`；只要它"编排步骤"，进 `application`；只要它"给用户看/给前端用"，进 `presentation`。
@@ -554,6 +707,11 @@ flowchart TB
 | ADR-007 | 保存配置时"快捷键部分失败不回滚配置" | 用户意图优先，丢配置比丢绑定严重 | 全量回滚（用户白填） |
 | ADR-008 | Windows DDC 用 **Dxva2.dll 的 `GetPhysicalMonitorsFromHMONITOR` / `SetVCPFeature`**，DisplayID 用**设备接口路径**（`\\?\DISPLAY#...\#{e6f07b5f-...}`） | 纯 syscall、零 cgo（满足 R6）；设备接口路径由 `EnumDisplayDevices` + `EDD_GET_DEVICE_INTERFACE_NAME` 给出，跨重启/换口稳定，且能直接映射到注册表 `Enum\<实例>\Device Parameters\EDID` 读取真实 EDID。`\\.\DISPLAY1` 这种 GDI 名会随接线顺序变，不能当 ID | 用 GDI 设备名（不稳定）；用 SetupAPI 自己匹配（还得再回到 HMONITOR 拿物理监视器句柄，多做一次枚举） |
 | ADR-009 | Windows 上 **Alt 通道（VCP 0xF4）返回 `ErrUnsupported`**，不降级写 0x51 | Dxva2 的 `SetVCPFeature` 只暴露逻辑显示器句柄，无法切换 I2C 从地址（0x50）；硬写会发到错误的通道上，比明确报"不支持"更糟。`switching.writeWithRetry` 对 `ErrUnsupported` 原样上抛，前端能准确提示 | 静默忽略 Alt（用户以为切了，实际没切） |
+| ADR-010 | 共享键鼠**复用 Deskflow 内核进程**，不自研键鼠注入 | 键鼠跨机传递涉及输入抓取、坐标映射、剪贴板同步，自研是以年来计的工作量；Deskflow 已是成熟实现，且 core 可被 `-s` 完全外置配置驱动、不需要它的 GUI | 自研（不可行）；捆绑 Deskflow GUI（多一个窗口、配置互相打架） |
+| ADR-011 | 自发现用**自研 UDP 广播**而不是 mDNS/Bonjour | Deskflow 自身零发现能力（已核对 v1.27.0 全量源码），而引入 zeroconf 依赖只为两台机器互相看见一次不划算；UDP 24801 与 Deskflow 的 24800/TCP 错开，行为完全可控，且不依赖系统守护进程（Windows 上 mDNS 支持尤其不稳） | mDNS/avahi（多一个系统依赖，Windows 支持参差）；手动填 IP（违背「自发现」需求） |
+| ADR-012 | 「自动配对」= **程序化预置指纹信任库**，而不是关掉 `checkPeerFingerprints` | Deskflow 的信任库是纯文本（每行 `v2:sha256:<hex>`），配对时双方各自能拿到对方指纹（信令报文里带），因此可以把对方指纹写进 `tls/trusted-{clients,servers}` 实现「零点击、但仍有指纹绑定」。而 `checkPeerFingerprints=false` 会退化成只加密不认人，任何同网段主机都能连上 | 关指纹校验（安全性下降）；让用户在 Deskflow GUI 里手动确认（违背「打开两个软件即可」） |
+| ADR-013 | Deskflow 的配置文件放在 `<配置目录>/switch-display/deskflow/`，**不写 `~/Library/Deskflow`** | 用户可能自己也在用 Deskflow GUI，共用配置文件会互相覆盖（GUI 会改写 `deskflow.conf`，`cleanSettings()` 还会删它不认识的键）；`-s` 只能改配置路径、改不了 state 路径，所以只隔离配置目录、接受窗口几何等 state 的极小冲突 | 复用 `~/Library/Deskflow`（与用户的 Deskflow GUI 互相破坏） |
+| ADR-014 | 共享状态存**独立的 `link.json`**，不塞进 `config.json` | 设备 ID / 配对记录都是运维态：丢了只是重新配一次，不需要事务性。塞进 `config.json` 就得升 `version` 触发迁移，代价与收益不成比例；独立文件还让 `LinkStore.Load` 可以在损坏时静默回落空快照 | 并入 `config.json`（为一个可丢字段引入配置迁移） |
 
 ---
 
@@ -571,6 +729,12 @@ flowchart TB
 | `presentation/wailsservice` | DTO 接线、错误码映射、警告一次性消费 | 同一套 fake + 临时配置目录，**不启动 Wails** | 无 |
 | `presentation/tray` | 菜单结构（顺序 / Radio / 打勾 / 禁用）、busy 串行、读回纠正 | `buildMenu()` 返回 `*wails.Menu`（纯数据结构，不需运行时） | 无 |
 | `infrastructure/ddc/darwin` | 取消、未知显示器、真实读回 | 不碰硬件的分支 + 真机烟雾测试 | 真机（有则跑，无则 skip） |
+| `domain/link` | 设备 ID/名称清洗/主机名派生、报文往返、快照校验 | 纯函数直调 | 无 |
+| `application/linkapp` | 配对握手（请求/接受/拒绝）、角色互换、停止、解绑、证书重建清信任 | fake `Transport` / `Core` / `Repository` | 无 |
+| `infrastructure/link/discovery` | 对端表增删与 TTL 过期、双 Transport 互换 announce | loopback UDP（`Listen(-1)` 拿内核端口） | 本机网络栈 |
+| `infrastructure/link/deskflow` | INI 键、布局双向性、信任库格式、PEM 段序、子进程启停与退出码 | `#!/bin/sh` 假 core + `t.TempDir()` | 无（不需要真 Deskflow） |
+| `application/linkapp` 联调 | 双 Service 真 UDP 互相发现 + 完整配对握手 + 文件落盘 | `//go:build link_integration`，端口 24981，core 用假脚本 | 本机网络栈（不需要真 Deskflow） |
+| `application/linkapp` 真 core | 真 `deskflow-core` 的 TLS 指纹互认、双向角色落定 | `//go:build deskflow_real`，端口 24983 | 装了 Deskflow 且显示器已唤醒 |
 | `bootstrap` | 装配完整性、失败快速返回 | `wails.New` 但不 `Run` | 无 |
 
 约定：
@@ -580,6 +744,7 @@ flowchart TB
 3. **不要泄漏内部切片**：`Snapshot()` / `List()` / `Refresh()` 都返回副本，测试里改返回值后要断言源对象没变。
 4. **区域相关的用例要 `t.Setenv`**：托盘文案按 `LC_ALL/LC_MESSAGES/LANG` 兜底，不定住就是环境依赖测试。
 5. 真机集成测试（会真的切屏幕）单独打 tag：`go test ./internal/bootstrap/ -tags manual -run TestSwitchToCurrentPort -v`。
+6. **需要外部二进制的测试只用 tag + 环境变量开启，默认 skip**：`DESKFLOW_CORE=<path> go test -tags deskflow_real ./internal/application/linkapp/ -run TestRealCorePair -v`。不要在测试里写死 `/Applications/...` 路径，否则 CI 上必然失败。
 
 跑法：`go test ./internal/... -cover`、`go vet ./internal/... .`、`gofmt -l internal/ main.go`。
 
@@ -628,4 +793,5 @@ flowchart TB
 | 2026-10-26 | **补齐后端 Go 单测并新增 §11 测试策略**：14 个包全部有用例（新增/扩写 `domain/display`、`application/{dto,configapp,displayapp,switchapp}`、`infrastructure/{ddc,ddc/darwin(branches),persistence(migrate),platform(+hotkey)}`、`presentation/{tray(+switch,+labels),wailsservice(+extra,+errors)}`、`bootstrap`）。覆盖 0% → 100% 的包 3 个（display / ddc / bootstrap），tray 10%→70%、wailsservice 53%→96%。测试暴露并修掉两个真 bug：① `tray.AddRadio(label, busy)` 第二参是 checked 不是 enabled（busy 时源项没被禁用）；② `displayapp.Refresh` 返回内部切片（调用方改名会污染缓存）。新增 §11 记录分层测试策略与 5 条约定（fake clock 必须返回 `context.Canceled` 等），原 §11/§12 顺延为 §12/§13 | 全部测试 + docs |
 | 2026-10-26 | **前端 UI 改版**：导航从顶部横排改为 **左侧可折叠 sidebar**（宽度 204px/60px，折叠态持久化到 `localStorage["switch-display:nav-collapsed"]`，底部放折叠与语言切换）；「添加信号源」表单从列表下方挪到**列表上方**（`SourcesView` 改为 `editingId` 单编辑器模式，新增行立刻进入编辑）；新增 5 个结构组件把视觉对齐变成结构保证：`PageShell`（标题/说明/操作区）、`SettingRow`（设置项）、`Field`（label+控件+hint）、`Badge`（6 变体徽标）、`Checkbox`；`SourceEditor` 新增/编辑共用（两列网格 + 快捷键录制遮罩）；切换台卡片重排（名称/副信息固定行高 → 卡片等高，切换按钮固定 74px 宽） | 前端 + docs |
 | 2026-10-27 | **Windows 平台落地（DDC + 表现层）**：① `infrastructure/ddc/windows/` 用 **Dxva2.dll + user32 + 注册表** 实现真实 DDC/CI（`port.go` 端口实现、`win32.go` Win32 薄封装、`edid.go` 纯函数 EDID 解析、`port_test.go` 不碰硬件的用例），删除 `stub.go`；DisplayID 用**设备接口路径**（ADR-008），Alt 通道返回 `ErrUnsupported`（ADR-009）。② 表现层按平台拆分：`icon_darwin.go`（`SetTemplateIcon`）与 `icon_desktop.go`（`SetIcon` + `SetDarkModeIcon`，新增 `assets/icon-white.png`）解决 Windows 上 template icon 是空实现导致**托盘无图标**；`self_darwin.go`/`self_other.go` 让英文文案在 Windows 说 "This PC" 而不是 "This Mac"；`main.go` 加 `WindowsOptions{DisableQuitOnLastWindowClosed: true}`（否则 `HideToTrayOnClose=false` 时关窗会退进程）；`App.vue` 的 40px 拖动区按平台隐藏（Windows 有原生标题栏）。③ `build/windows/wails.exe.manifest` 的 `requestedExecutionLevel` 由 `asInvoker` 改为 **`requireAdministrator`**（DDC 的 I2C 通道在部分驱动下不给非提权进程，`SetVCPFeature` 静默失败）；④ 新增 ADR-008/009、更新 §3 目录树、§4 状态列、§8 扩展指引、`docs/plan.md` §9/§14 | infrastructure/ddc + presentation/tray + main.go + build/windows + 前端 + docs |
+| 2026-10-27 | **第三步：局域网共享键鼠（Deskflow 集成）**。新增 `domain/link`（设备身份/信令报文/配对记录/运行状态）、`application/linkapp`（发现→配对→启停编排）、`infrastructure/link/discovery`（UDP 24801 广播 + 单播信令 + 对端表）、`infrastructure/link/deskflow`（定位 core / 自签证书与指纹 / INI+布局+信任库 / 子进程生命周期）、`infrastructure/persistence/{linkpaths,linkstore}.go`（独立 `link.json`）、`presentation/wailsservice/linkservice.go`（`LinkService`，7 个方法）、前端 `/share` 页 + `stores/link.ts` + 侧栏入口 + 中英文案；新增 `EventLinkChanged`；新增 ADR-010…ADR-014；§3 目录树、§4 状态列、§5 契约（含 `link.json` 与 Deskflow 文件清单）、§7.4 配对时序图按实际实现更新。调研结论与实施进度见 [deskflow-integration.md](./deskflow-integration.md)。同轮修正：`[log] level=info` 下 DEBUG 行不输出，状态判定改用 INFO 级 `connected to secure socket`/`accepted client connection`；TCP 就绪探测造成的 `ERROR: failed to accept secure socket` 列入 benign 噪音；新增 `-tags deskflow_real` 真 core 联调测试；WARN 不再判死（client 首连失败会自动重试）；`PairResultDTO.Message` / `CoreStatusDTO.Message` / 配对拒绝原因码改为稳定标识由前端 `share.notice.*` / `share.coreMsg.*` / `share.reject.*` 翻译（Deskflow 自身输出的英文 ERROR 行原样透传）；`reuseport` 按平台拆分（Linux 需 x/sys/unix） | 全部层 + docs |
 | 2026-10-27 | **Windows 托盘两处修复**：① 右键菜单不弹出 —— 资源管理器在 NOTIFYICON_VERSION_4 下会把 `WM_CONTEXTMENU` 当普通窗口消息直接投给托盘窗口，Wails beta.34 的 `systemtray_windows.go` 只在 `wmUserSystray` 分支处理它，直接投递的那条落到 `DefWindowProc`（左键正常、右键无反应）。`tray/uipi_windows.go` 的 `WndProcInterceptor` 挂在 `WindowsOptions.WndProcInterceptor` 上补住这条，只对父窗口为 `HWND_MESSAGE` 的消息窗口生效；同时 `start` 里显式 `OnRightClick(OpenMenu)`，并用 `ChangeWindowMessageFilter(Ex)` 放行 `WM_USER+1`（提权进程收不到非提权 explorer 的回调）。② 托盘语言不跟随系统 —— `isChinese` 原来只看 `LC_ALL`/`LC_MESSAGES`/`LANG`，Windows 不设这些变量所以永远英文；改为「显式语言 > locale 变量（`C`/`POSIX` 哨兵忽略）> 系统 UI 语言」，系统语言在 `lang_windows.go` 用 `GetUserDefaultUILanguage` 取主语言 ID | presentation/tray + main.go + docs |

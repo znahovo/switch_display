@@ -15,9 +15,12 @@ import (
 
 	"github.com/znahovo/switch-display/internal/application/configapp"
 	"github.com/znahovo/switch-display/internal/application/displayapp"
+	"github.com/znahovo/switch-display/internal/application/linkapp"
 	"github.com/znahovo/switch-display/internal/application/switchapp"
 	"github.com/znahovo/switch-display/internal/domain/switching"
 	"github.com/znahovo/switch-display/internal/infrastructure/ddc"
+	"github.com/znahovo/switch-display/internal/infrastructure/link/deskflow"
+	"github.com/znahovo/switch-display/internal/infrastructure/link/discovery"
 	"github.com/znahovo/switch-display/internal/infrastructure/persistence"
 	"github.com/znahovo/switch-display/internal/infrastructure/platform"
 	"github.com/znahovo/switch-display/internal/presentation/tray"
@@ -27,9 +30,11 @@ import (
 // App 持有装配好的所有组件，供 main.go 与托盘使用。
 type App struct {
 	DisplayService *wailsservice.DisplayService
+	LinkService    *wailsservice.LinkService
 	Displays       *displayapp.Service
 	Config         *configapp.Service
 	Switcher       *switchapp.Service
+	Link           *linkapp.Service
 	Tray           *tray.Tray
 
 	// wailsApp 只用于「关窗口即退出」：两个平台的
@@ -81,6 +86,31 @@ func Build(wailsApp *wails.App) (*App, error) {
 		Log:    log,
 	})
 
+	// ③½ 局域网共享：Deskflow core 驱动 + UDP 发现。
+	//
+	// 存储单独一份 link.json：它是运维态（设备 ID、配对记录），
+	// 丢了最多重新配对一次，不该让它参与 config.json 的版本迁移。
+	linkRepo, err := persistence.NewLinkStore("")
+	if err != nil {
+		return nil, fmt.Errorf("init link store: %w", err)
+	}
+	deskflowDir, err := persistence.DefaultDeskflowDir()
+	if err != nil {
+		return nil, fmt.Errorf("init deskflow dir: %w", err)
+	}
+	coreEngine := deskflow.NewEngine(deskflow.EngineDeps{
+		Dir: deskflowDir,
+		Log: log,
+	})
+	transport := discovery.New(discovery.Deps{Log: log})
+	linkSvc := linkapp.New(linkapp.Deps{
+		Repo:      linkRepo,
+		Transport: transport,
+		Core:      coreEngine,
+		Events:    events,
+		Log:       log,
+	})
+
 	// ⑤ 菜单栏：托盘是配置的投影，把它放最后建，这样它拿到的依赖都已就绪。
 	// 真正的 Start（建图标 + 首次渲染）在 App.Start 里做，那时配置已经读进来。
 	trayView := tray.New(tray.Deps{
@@ -97,6 +127,7 @@ func Build(wailsApp *wails.App) (*App, error) {
 		Displays: displays,
 		Config:   config,
 		Switcher: switcher,
+		Link:     linkSvc,
 		Tray:     trayView,
 		wailsApp: wailsApp,
 		hotkeys:  hotkeys,
@@ -110,6 +141,10 @@ func Build(wailsApp *wails.App) (*App, error) {
 		OnStartup: app.Start,
 	})
 	app.DisplayService = svc
+	app.LinkService = wailsservice.NewLink(wailsservice.LinkDeps{
+		Link:      linkSvc,
+		OnStartup: app.startLink,
+	})
 
 	hotkeys.OnFire(func(sourceID string) {
 		go func() {
@@ -150,6 +185,17 @@ func (a *App) Start(ctx context.Context) error {
 
 	a.watcher = displayapp.NewWatcher(a.Displays, a.events, a.log, platform.NewClock(), 0)
 	go a.watcher.Run(ctx)
+	return nil
+}
+
+// startLink 启动共享：加载身份、生成证书、开始 UDP 发现。
+//
+// 失败不阻断整个应用启动——用户可能只是没装 Deskflow，或本机端口被占，
+// 显示器切换功能不该因此不可用。
+func (a *App) startLink(ctx context.Context) error {
+	if err := a.Link.Start(ctx); err != nil {
+		a.log.Error("link service unavailable", err)
+	}
 	return nil
 }
 

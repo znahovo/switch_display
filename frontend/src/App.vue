@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 应用外壳：左侧可展开导航栏 + 内容区。
 //
-// 为什么是左侧栏而不是顶部横排：这个应用只有三个页面，但「切换台」是常驻
+// 为什么是左侧栏而不是顶部横排：这个应用只有四个页面，但「切换台」是常驻
 // 主操作，竖向排列能给每个入口配图标 + 文字，标题栏也不必再挤一层。
 // 窗口在 macOS 上用了 MacTitleBarHiddenInset，红绿灯浮在左上角，所以侧栏
 // 顶部留 40px 拖动区，红绿灯正好落在侧栏里；Windows 保留原生标题栏（关窗
@@ -15,22 +15,26 @@ import {
   Languages,
   LayoutGrid,
   ListVideo,
+  Network,
   Settings as SettingsIcon,
 } from "lucide-vue-next"
 import { detectLocale, setLocale, type Locale } from "@/locales"
 import { isMac } from "@/lib/platform"
 import { onEvent, EventName } from "@/api"
 import { useAppStore } from "@/stores/app"
+import { useLinkStore } from "@/stores/link"
 
 const { t, locale } = useI18n()
 const store = useAppStore()
+const linkStore = useLinkStore()
 const route = useRoute()
 const router = useRouter()
 
-/** 三个页面的导航项：path 同时是路由和 i18n key 的一部分。 */
+/** 四个页面的导航项：path 同时是路由和 i18n key 的一部分。 */
 const navItems = [
   { path: "/", key: "nav.switcher", icon: LayoutGrid },
   { path: "/sources", key: "nav.sources", icon: ListVideo },
+  { path: "/share", key: "nav.share", icon: Network },
   { path: "/settings", key: "nav.settings", icon: SettingsIcon },
 ] as const
 
@@ -50,6 +54,9 @@ onMounted(() => {
   offs.push(onEvent(EventName.stateChanged, () => store.refresh()))
   // 切换结果由后端推过来：这里只记 outcome，细节文案已在 DTO 里。
   offs.push(onEvent(EventName.switchFinished, () => store.refresh()))
+  // 共享状态（发现到对端、core 起停）变化：只刷共享 store，
+  // 不刷整页——否则每 2 秒一次广播心跳都会让切换台重渲染。
+  offs.push(onEvent(EventName.linkChanged, () => linkStore.refresh()))
   // 托盘点「设置…」时把用户带到设置页（窗口由后端显示出来）。
   offs.push(onEvent(EventName.openSettings, () => router.push("/settings")))
   // 通用跳转：payload 是目标路径。

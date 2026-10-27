@@ -45,6 +45,7 @@ func main() {
 		log.Fatalf("bootstrap: %v", err)
 	}
 	app.RegisterService(wails.NewService(wire.DisplayService))
+	app.RegisterService(wails.NewService(wire.LinkService))
 
 	win := app.Window.NewWithOptions(wails.WebviewWindowOptions{
 		Name:   "main",
