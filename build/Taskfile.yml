@@ -203,6 +203,29 @@ tasks:
     cmds:
       - wails3 generate icons -input appicon.png -macfilename darwin/icons.icns -windowsfilename windows/icon.ico -iconcomposerinput appicon.icon -macassetdir darwin
 
+  deskflow:bundle:
+    summary: Downloads, verifies and trims the Deskflow runtime so it can be bundled into the app
+    desc: |
+      Fetches the Deskflow release matching DESKFLOW_VERSION, verifies it against
+      the release's own `sums.txt`, and trims it down to only what `deskflow-core`
+      needs at runtime. Output goes to `build/deskflow/<os>/<arch>/`, which is
+      gitignored — binaries never enter the repository.
+
+      Packaging copies the trimmed tree into the app:
+        macOS   -> <App>.app/Contents/Resources/deskflow/
+        Windows -> <exe dir>\deskflow\ (the NSIS script installs it)
+
+      Usage: task common:deskflow:bundle [ARCH=arm64] [DESKFLOW_VERSION=1.27.0]
+      Skip:  task darwin:package BUNDLE_DESKFLOW=false
+    cmds:
+      - cmd: 'DESKFLOW_VERSION="{{.DESKFLOW_VERSION}}" ./build/deskflow/fetch.sh "{{.GOOS}}" "{{.ARCH}}"'
+    vars:
+      # OS/ARCH default to the host; packaging tasks pass both explicitly so a
+      # cross-build (e.g. windows/amd64 from macOS) fetches the matching runtime.
+      GOOS: '{{.GOOS | default OS}}'
+      ARCH: '{{.ARCH | default ARCH}}'
+      DESKFLOW_VERSION: '{{.DESKFLOW_VERSION | default "1.27.0"}}'
+
   dev:frontend:
     summary: Runs the frontend in development mode
     deps:

@@ -31,6 +31,12 @@ Unicode true
 ## !define REQUEST_EXECUTION_LEVEL "admin"            # Default "admin"  see also https://nsis.sourceforge.io/Docs/Chapter4.html
 ## !define WAILS_INSTALL_SCOPE     "user"             # Default "machine" - set to "user" for per-user install ($LOCALAPPDATA) without UAC prompt
 ####
+## The bundled Deskflow runtime (deskflow-core.exe + Qt DLLs) is passed in by
+## the build task as a directory. It is installed to "$INSTDIR\deskflow" so that
+## switch_display finds it next to its own executable; when the define is absent
+## (manual makensis runs) the installer simply ships without sharing support.
+## !define ARG_WAILS_DESKFLOW_DIR "..\..\..\bin\deskflow" # Default undefined
+####
 ## Include the wails tools
 ####
 !include "wails_tools.nsh"
@@ -90,8 +96,19 @@ Section
     !insertmacro wails.webview2runtime
 
     SetOutPath $INSTDIR
-    
+
     !insertmacro wails.files
+
+    # Bundled Deskflow runtime. Installed next to the executable because the app
+    # locates it relative to os.Executable(); missing it only disables the
+    # "局域网共享键鼠" feature, everything else keeps working.
+    !ifdef ARG_WAILS_DESKFLOW_DIR
+        SetOutPath "$INSTDIR\deskflow"
+        File /r "${ARG_WAILS_DESKFLOW_DIR}\*.*"
+        SetOutPath $INSTDIR
+    !else
+        DetailPrint "Deskflow runtime not bundled; sharing mouse/keyboard will be unavailable."
+    !endif
 
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"

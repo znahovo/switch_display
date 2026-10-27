@@ -353,6 +353,7 @@ core 用一个 `#!/bin/sh` 假脚本代替真 Deskflow）在同一台机器上�
 | S7 service/bootstrap/main | ✅ 完成 | `LinkService` 已注册；`wails3 generate bindings` 生成 2 services / 17 methods / 14 models |
 | S8 前端 | ✅ 完成 | `/share` 页 + `stores/link.ts` + `api.linkApi` + 侧栏入口 + 中英文案；`vue-tsc` 与 `npm run build` 通过 |
 | S9 文档同步 | ✅ 完成 | architecture.md §3/§4/§5/§7/§10/§13、README.md 索引 |
+| S11 内置运行时 | ✅ 代码完成 | `build/deskflow/fetch.sh` + `common:deskflow:bundle` + 三平台打包接线 + `bundledCore()` 定位；macOS 实测 `.app` 里 57MB 运行时可用、`codesign --verify` 通过 |
 | S10 验证 | 🟡 大部分完成 | 静态检查、单测、`vue-tsc`、`npm run build` 全绿；**同机双实例联调通过**（`-tags link_integration`）；**真 `deskflow-core` v1.27.0 配对通过**（`-tags deskflow_real`，3.3s）；**两台真机跨机器联调待做**（需要第二台设备，见 §9.2） |
 
 ### 9.1 实现与本文档设计的偏差（已按实现更新）
@@ -365,6 +366,8 @@ core 用一个 `#!/bin/sh` 假脚本代替真 Deskflow）在同一台机器上�
 6. **`Bye` 的处理**：对端停止时，若本机是 client 则一并停掉 core，避免对着已消失的主机无限重连；server 侧不动（它还可能在等其它客机）。
 7. **提示与状态说明都用稳定标识而不是中文**：`PairResultDTO.Message` 返回 `pair_invite_sent` / `pair_join_sent` / `name_updated` / `sharing_stopped` / `peer_unpaired`，`CoreStatusDTO.Message` 返回 `client_started` / `client_stopped` / `exit_args` / `exit_config` / `exit_duplicate`，配对拒绝的原因码是 `fingerprint_invalid` / `busy` / `unknown`；前端 `share.notice.*` / `share.coreMsg.*` / `share.reject.*` 负责翻译（与 `switchapp.messageFor` 同一约定，后端不掺语言）。**例外**：Deskflow 自己输出的 ERROR/CRIT 行是英文原文，翻不出来，前端原样透传。
 8. **`reuseport` 按平台拆三个文件**：Linux 的 `SO_REUSEPORT` 不在 `syscall` 包里（`undefined: syscall.SO_REUSEPORT`），必须走 `golang.org/x/sys/unix`；其它平台退化为 no-op。原先一个 `reuseport_posix.go` 只能编过 macOS。
+
+9. **分发形态：Deskflow 运行时随应用内置**：不再要求用户自己装 Deskflow。构建期由 `build/deskflow/fetch.sh` 从 release 下载、按 `sums.txt` 校验、裁剪后放进 `build/deskflow/<os>/<arch>/`（`.gitignore` 忽略，**二进制不进仓库**）；打包时拷进 `.app/Contents/Resources/deskflow/` 或 `$INSTDIR\deskflow\`。`deskflow.Locate()` 把内置路径排在系统安装版之前。详见 §11。
 
 ### 9.2 尚未验证的部分（S10 剩余）
 
@@ -388,3 +391,81 @@ core 用一个 `#!/bin/sh` 假脚本代替真 Deskflow）在同一台机器上�
 2. **设备名默认值**：`os.Hostname()`，用户可在共享页改。
 3. **是否允许「本机作为主机、被动等待」**：允许——主机也可以主动进入 server 模式，等对端点「连接到主机」。
 4. **布局方向**：默认 `A right of B` 的双向链接（鼠标从 A 右缘过去）。多屏/上下布局留待后续（布局文件已支持，只是 UI 没做）。
+
+---
+
+## 11. 内置 Deskflow 运行时（自包含分发）
+
+目标：用户装完 switch_display 就能共享键鼠，**不需要另外安装 Deskflow**。
+
+### 11.1 为什么不提交二进制、也不用 `go:embed`
+
+- Deskflow 运行时是 57MB（macOS）/ 38MB（Windows，单架构）的原生程序加一批 Qt 动态库。提交进 git 会让仓库永久背上这些体积，且升级 Deskflow 就是一次无法 diff 的二进制替换。
+- `go:embed` 会把它们塞进 Go 可执行文件：每次启动操作系统都要映射这 40+MB，而 Go 的 embed 还要求文件在编译时就在源码树里——等于把上面的问题搬到构建期。
+- 于是选择**构建期下载 + 打包期拷贝**：源码树只有 `fetch.sh` 与几行 Taskfile。
+
+### 11.2 流水线
+
+```mermaid
+flowchart LR
+    A["build/deskflow/fetch.sh<br/>os arch"] -->|"下载 release 资产"| B["sums.txt<br/>sha256 校验"]
+    B --> C["解包 / 挂载<br/>dmg 或 portable zip"]
+    C --> D["裁剪<br/>只留 core 需要的"]
+    D --> E[("build/deskflow/&lt;os&gt;/&lt;arch&gt;<br/>gitignored")]
+    E -->|"macOS"| F["&lt;App&gt;.app/Contents/Resources/deskflow/"]
+    E -->|"Windows"| G["$INSTDIR\deskflow\"]
+    F --> H["deskflow.Locate()"]
+    G --> H
+```
+
+幂等：产物目录里有 `.version` 且等于目标版本时直接跳过，`rm -rf build/deskflow/<os>/<arch>` 可强制重拉。下载缓存留在 `.task/deskflow-cache/`（已在 `.gitignore`）。
+
+### 11.3 裁剪规则（都是实测出来的）
+
+macOS（dmg，必须 `printf 'y\ny\ny\n' | hdiutil attach -nobrowse -readonly -noverify -mountpoint <dir> <dmg>`，否则被 license 提示卡成 `attach canceled`）：
+
+| 保留 | 理由 |
+|---|---|
+| `Contents/MacOS/deskflow-core` | 只留 core，GUI 的 `Deskflow` 二进制不要 |
+| `Frameworks/{QtCore,QtGui,QtWidgets,QtNetwork,QtDBus}` | `otool -L` 显示 core 依赖前四个；**QtDBus 是 QtGui 的硬依赖**，少它直接 `Library not loaded` |
+| `PlugIns/{platforms,tls,networkinformation}` | `platforms/libqcocoa` 缺了会 `Could not find the Qt platform plugin "cocoa"` |
+| `Resources/{qt.conf,LICENSE}` | `qt.conf` 的 `Plugins = PlugIns` 是子目录布局的关键；LICENSE 是 GPL-2.0 的合规要求 |
+
+必须保持 Deskflow 自己的 `Contents/...` 相对结构——core 的 rpath 是 `@loader_path/../Frameworks`，拷单个二进制到任意目录跑不起来。`fetch.sh` 收尾会执行 `deskflow-core --version` 自检，非 0 就报错而不是留个坏包。
+
+Windows（portable zip）：保留 `deskflow-core.exe` + 顶层全部 `*.dll` + `plugins/` + `LICENSE*`，丢掉 `deskflow.exe`（GUI）、`translations/`、`docs/`、`settings/`。
+
+### 11.4 运行期定位
+
+`internal/infrastructure/link/deskflow/locate.go` 的查找顺序（`Locate(explicit)`）：
+
+1. 用户显式指定的路径（目前没有 UI 入口，留给配置/调试）；
+2. **内置**——`bundledCoreUnder(exeDir)`：
+   - macOS：`<exeDir>/../Resources/deskflow/Contents/MacOS/deskflow-core`
+   - Windows：`<exeDir>/deskflow/deskflow-core.exe`、`<exeDir>/deskflow/Contents/MacOS/deskflow-core.exe`
+3. 系统安装：`/Applications/Deskflow.app/...`、`%ProgramFiles%\Deskflow\...`、`/usr/bin`、`/opt/homebrew/bin`；
+4. `exec.LookPath`。
+
+内置优先于系统安装版：我们打包的这份 Qt 依赖是配好的；用户想用自己装的 Deskflow，未来可通过显式路径覆盖。全都找不到时返回 `ErrNoCore`，前端显示「未检测到 Deskflow」并给出 `deskflowDir`，共享页其余功能不受影响（只是不能共享）。
+
+### 11.5 打包接线
+
+| 位置 | 改动 |
+|---|---|
+| `build/deskflow/fetch.sh` | 下载 + 校验 + 裁剪 + 自检，`<goos> <goarch>` 两个参数 |
+| `build/Taskfile.yml` | `common:deskflow:bundle`（`GOOS`/`ARCH`/`DESKFLOW_VERSION`，**不加 `run: once`**，否则换架构时会被 task 缓存成只跑一次） |
+| `build/darwin/Taskfile.yml` | `create:app:bundle` 在拷二进制之后、`codesign:adhoc` **之前**调 `bundle:deskflow`（签完名再往里放文件会让签名失效）；`run`（dev 包）同样拷一份，否则开发期永远验证不到内置路径 |
+| `build/windows/Taskfile.yml` | `build:native` 后调 `bundle:deskflow`（拷到 `bin/deskflow`）；`create:nsis:installer` 传 `-DARG_WAILS_DESKFLOW_DIR=...` |
+| `build/windows/nsis/project.nsi` | `!ifdef ARG_WAILS_DESKFLOW_DIR` → `SetOutPath "$INSTDIR\deskflow"` + `File /r`；未定义时只打一行 `DetailPrint` 说明没有共享功能 |
+| `.gitignore` | `build/deskflow/darwin`、`build/deskflow/windows` |
+
+关掉内置：`task darwin:package BUNDLE_DESKFLOW=false`（打出来的包只有当机器上另装了 Deskflow 才能共享）。
+
+两处**不支持**内置：
+
+- **Linux**：本需求只覆盖 win/mac，`fetch.sh` 对其它平台直接 `die`；`linux:*` 打包任务也不调它，所以 Linux 产物不含运行时（用户需自装 Deskflow）。要支持时在 `release_asset()` 里加 deb/rpm 映射即可。
+- **Windows MSIX**（`FORMAT=msix`）：`wails3 tool msix` 只打包单个可执行文件，没法带同目录的 `deskflow/`。需要在自包含安装包时用默认的 NSIS；`create:msix:package` 里已加一行 `WARNING` 提示。
+
+### 11.6 许可证
+
+Deskflow 是 **GPL-2.0**。我们把裁剪后的 `LICENSE` 一并放进 `Contents/Resources/deskflow/Contents/Resources/LICENSE`（Windows 是 `deskflow/LICENSE`），它作为独立进程被调用、不与我们的代码链接，因此不改变 switch_display 自身的许可；但分发时必须在 UI/文档里注明「本软件包含 Deskflow（GPL-2.0）运行时代码」并给出 <https://github.com/deskflow/deskflow> 链接。

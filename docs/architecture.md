@@ -190,7 +190,7 @@ switch_display/
 │   │   │   │   ├── broadcast.go     # 各网卡定向广播地址计算（跨平台）
 │   │   │   │   └── udp_test.go      # loopback 双 Transport 互换 announce
 │   │   │   └── deskflow/
-│   │   │       ├── locate.go        # 找 deskflow-core（三平台候选路径 + PATH + 缓存）
+│   │   │       ├── locate.go        # 找 deskflow-core（内置 → 系统安装 → PATH，带缓存）
 │   │   │       ├── cert.go          # 自签 PEM 生成 / 指纹读取 / 过期重建
 │   │   │       ├── config.go        # deskflow.conf（INI）+ 布局文件 + 指纹信任库
 │   │   │       ├── process.go       # 子进程拉起 / 日志泵 / 端口就绪探测 / 停止
@@ -275,6 +275,14 @@ switch_display/
 │           ├── utils.ts             # cn()
 │           ├── theme.ts             # 跟随系统 light/dark
 │           └── accelerator.ts       # KeyboardEvent.code → accelerator 字符串 + ⌘⌥1 显示
+├── build/                           # 构建资产（Wails 平台任务 / 图标 / 安装脚本）
+│   ├── deskflow/
+│   │   └── fetch.sh                 # 下载+校验+裁剪 Deskflow 运行时（产物 build/deskflow/<os>/<arch>/ 被 gitignore）
+│   ├── darwin/Taskfile.yml          # .app 打包；bundle:deskflow 在 codesign 之前拷运行时
+│   ├── windows/
+│   │   ├── Taskfile.yml             # 交叉编译 + NSIS 打包；bundle:deskflow 拷到 bin/deskflow
+│   │   └── nsis/project.nsi         # ARG_WAILS_DESKFLOW_DIR → 装进 $INSTDIR\deskflow
+│   └── Taskfile.yml                 # common:deskflow:bundle（各平台打包任务的共用入口）
 └── docs/
     ├── plan.md                      # 需求与实施方案（会随需求演进）
     ├── deskflow-integration.md      # 共享键鼠：Deskflow 调研结论 + 设计 + 实施进度
@@ -302,6 +310,7 @@ switch_display/
 | `presentation/wailsservice` | 暴露给前端的 API、DTO 映射、错误 code | 不含流程控制 | ✅ 第一步（第三步加 `LinkService`） |
 | `presentation/tray` | 菜单结构、图标、当前源打勾、点击转发、关窗隐藏 | 不直接调 ddc | ✅ 第二步 / Windows 图标与文案已适配 |
 | `bootstrap` | 装配、生命周期、热插拔轮询、关窗拦截接线 | 不写业务分支 | ✅ 第二步 |
+| `build/`（非 Go 层） | 打包：`.app` / `.exe` / NSIS 安装包，以及把 Deskflow 运行时内置进产物 | 不含运行期逻辑；运行期只由 `deskflow/locate.go` 反向读取布局 | ✅ 第三步 |
 
 ---
 
@@ -712,6 +721,7 @@ sequenceDiagram
 | ADR-012 | 「自动配对」= **程序化预置指纹信任库**，而不是关掉 `checkPeerFingerprints` | Deskflow 的信任库是纯文本（每行 `v2:sha256:<hex>`），配对时双方各自能拿到对方指纹（信令报文里带），因此可以把对方指纹写进 `tls/trusted-{clients,servers}` 实现「零点击、但仍有指纹绑定」。而 `checkPeerFingerprints=false` 会退化成只加密不认人，任何同网段主机都能连上 | 关指纹校验（安全性下降）；让用户在 Deskflow GUI 里手动确认（违背「打开两个软件即可」） |
 | ADR-013 | Deskflow 的配置文件放在 `<配置目录>/switch-display/deskflow/`，**不写 `~/Library/Deskflow`** | 用户可能自己也在用 Deskflow GUI，共用配置文件会互相覆盖（GUI 会改写 `deskflow.conf`，`cleanSettings()` 还会删它不认识的键）；`-s` 只能改配置路径、改不了 state 路径，所以只隔离配置目录、接受窗口几何等 state 的极小冲突 | 复用 `~/Library/Deskflow`（与用户的 Deskflow GUI 互相破坏） |
 | ADR-014 | 共享状态存**独立的 `link.json`**，不塞进 `config.json` | 设备 ID / 配对记录都是运维态：丢了只是重新配一次，不需要事务性。塞进 `config.json` 就得升 `version` 触发迁移，代价与收益不成比例；独立文件还让 `LinkStore.Load` 可以在损坏时静默回落空快照 | 并入 `config.json`（为一个可丢字段引入配置迁移） |
+| ADR-015 | Deskflow 运行时**随应用内置**（构建期下载+校验+裁剪，二进制不进仓库），而不是要求用户自己安装 | 用户为了共享键鼠先去 GitHub 装一个 Deskflow 再回来点按钮，等于把集成做废；而 57MB(macOS)/38MB(Windows) 的二进制提交进 git 会让仓库不可维护，`go:embed` 又会让每次启动都映射这堆动态库。放 `build/deskflow/<os>/<arch>/`（gitignored）+ 打包期拷进产物，兼顾自包含与仓库轻量 | 要求用户自装（体验断裂）；提交二进制（仓库膨胀）；`go:embed`（启动成本 + 仍需在源码树里放二进制） |
 
 ---
 
@@ -744,7 +754,8 @@ sequenceDiagram
 3. **不要泄漏内部切片**：`Snapshot()` / `List()` / `Refresh()` 都返回副本，测试里改返回值后要断言源对象没变。
 4. **区域相关的用例要 `t.Setenv`**：托盘文案按 `LC_ALL/LC_MESSAGES/LANG` 兜底，不定住就是环境依赖测试。
 5. 真机集成测试（会真的切屏幕）单独打 tag：`go test ./internal/bootstrap/ -tags manual -run TestSwitchToCurrentPort -v`。
-6. **需要外部二进制的测试只用 tag + 环境变量开启，默认 skip**：`DESKFLOW_CORE=<path> go test -tags deskflow_real ./internal/application/linkapp/ -run TestRealCorePair -v`。不要在测试里写死 `/Applications/...` 路径，否则 CI 上必然失败。
+6. **打包产物里的内置运行时靠 `bundledCoreUnder(dir)` 单独测**：`bundledCore()` 依赖 `os.Executable()` 造不出真实 `.app`，所以定位逻辑拆成可传目录的版本，测试里手搭 `deskflow/` 与 `Resources/deskflow/Contents/MacOS/` 两种布局。
+7. **需要外部二进制的测试只用 tag + 环境变量开启，默认 skip**：`DESKFLOW_CORE=<path> go test -tags deskflow_real ./internal/application/linkapp/ -run TestRealCorePair -v`。不要在测试里写死 `/Applications/...` 路径，否则 CI 上必然失败。
 
 跑法：`go test ./internal/... -cover`、`go vet ./internal/... .`、`gofmt -l internal/ main.go`。
 
@@ -794,4 +805,5 @@ sequenceDiagram
 | 2026-10-26 | **前端 UI 改版**：导航从顶部横排改为 **左侧可折叠 sidebar**（宽度 204px/60px，折叠态持久化到 `localStorage["switch-display:nav-collapsed"]`，底部放折叠与语言切换）；「添加信号源」表单从列表下方挪到**列表上方**（`SourcesView` 改为 `editingId` 单编辑器模式，新增行立刻进入编辑）；新增 5 个结构组件把视觉对齐变成结构保证：`PageShell`（标题/说明/操作区）、`SettingRow`（设置项）、`Field`（label+控件+hint）、`Badge`（6 变体徽标）、`Checkbox`；`SourceEditor` 新增/编辑共用（两列网格 + 快捷键录制遮罩）；切换台卡片重排（名称/副信息固定行高 → 卡片等高，切换按钮固定 74px 宽） | 前端 + docs |
 | 2026-10-27 | **Windows 平台落地（DDC + 表现层）**：① `infrastructure/ddc/windows/` 用 **Dxva2.dll + user32 + 注册表** 实现真实 DDC/CI（`port.go` 端口实现、`win32.go` Win32 薄封装、`edid.go` 纯函数 EDID 解析、`port_test.go` 不碰硬件的用例），删除 `stub.go`；DisplayID 用**设备接口路径**（ADR-008），Alt 通道返回 `ErrUnsupported`（ADR-009）。② 表现层按平台拆分：`icon_darwin.go`（`SetTemplateIcon`）与 `icon_desktop.go`（`SetIcon` + `SetDarkModeIcon`，新增 `assets/icon-white.png`）解决 Windows 上 template icon 是空实现导致**托盘无图标**；`self_darwin.go`/`self_other.go` 让英文文案在 Windows 说 "This PC" 而不是 "This Mac"；`main.go` 加 `WindowsOptions{DisableQuitOnLastWindowClosed: true}`（否则 `HideToTrayOnClose=false` 时关窗会退进程）；`App.vue` 的 40px 拖动区按平台隐藏（Windows 有原生标题栏）。③ `build/windows/wails.exe.manifest` 的 `requestedExecutionLevel` 由 `asInvoker` 改为 **`requireAdministrator`**（DDC 的 I2C 通道在部分驱动下不给非提权进程，`SetVCPFeature` 静默失败）；④ 新增 ADR-008/009、更新 §3 目录树、§4 状态列、§8 扩展指引、`docs/plan.md` §9/§14 | infrastructure/ddc + presentation/tray + main.go + build/windows + 前端 + docs |
 | 2026-10-27 | **第三步：局域网共享键鼠（Deskflow 集成）**。新增 `domain/link`（设备身份/信令报文/配对记录/运行状态）、`application/linkapp`（发现→配对→启停编排）、`infrastructure/link/discovery`（UDP 24801 广播 + 单播信令 + 对端表）、`infrastructure/link/deskflow`（定位 core / 自签证书与指纹 / INI+布局+信任库 / 子进程生命周期）、`infrastructure/persistence/{linkpaths,linkstore}.go`（独立 `link.json`）、`presentation/wailsservice/linkservice.go`（`LinkService`，7 个方法）、前端 `/share` 页 + `stores/link.ts` + 侧栏入口 + 中英文案；新增 `EventLinkChanged`；新增 ADR-010…ADR-014；§3 目录树、§4 状态列、§5 契约（含 `link.json` 与 Deskflow 文件清单）、§7.4 配对时序图按实际实现更新。调研结论与实施进度见 [deskflow-integration.md](./deskflow-integration.md)。同轮修正：`[log] level=info` 下 DEBUG 行不输出，状态判定改用 INFO 级 `connected to secure socket`/`accepted client connection`；TCP 就绪探测造成的 `ERROR: failed to accept secure socket` 列入 benign 噪音；新增 `-tags deskflow_real` 真 core 联调测试；WARN 不再判死（client 首连失败会自动重试）；`PairResultDTO.Message` / `CoreStatusDTO.Message` / 配对拒绝原因码改为稳定标识由前端 `share.notice.*` / `share.coreMsg.*` / `share.reject.*` 翻译（Deskflow 自身输出的英文 ERROR 行原样透传）；`reuseport` 按平台拆分（Linux 需 x/sys/unix） | 全部层 + docs |
+| 2026-10-27 | **Deskflow 运行时随应用内置**：`build/deskflow/fetch.sh` 按 `sums.txt` 校验 sha256 后从 v1.27.0 release 取运行时并裁剪（macOS 保留 `deskflow-core` + 5 个 Qt framework + `platforms/tls/networkinformation` 插件 + `qt.conf`；Windows 保留 `deskflow-core.exe` + DLL + `plugins/`），产物 `build/deskflow/<os>/<arch>/` 由 `.gitignore` 忽略、不进仓库；`common:deskflow:bundle` 任务做入口，darwin 打包在 `codesign` **之前**拷进 `<App>.app/Contents/Resources/deskflow/`（dev 包同样拷，否则内置路径永远验证不到），Windows 由 NSIS 用 `ARG_WAILS_DESKFLOW_DIR` 装进 `$INSTDIR\deskflow`；`deskflow.Locate()` 新增 `bundledCoreUnder()`，内置路径优先于系统安装版。理由：用户不该为了共享键鼠先去装 Deskflow，而 57MB/38MB 的二进制既不能进 git 也不适合 `go:embed`（每次启动都要映射）。见 [deskflow-integration.md](./deskflow-integration.md) §11 | 构建 + infrastructure/link/deskflow + docs |
 | 2026-10-27 | **Windows 托盘两处修复**：① 右键菜单不弹出 —— 资源管理器在 NOTIFYICON_VERSION_4 下会把 `WM_CONTEXTMENU` 当普通窗口消息直接投给托盘窗口，Wails beta.34 的 `systemtray_windows.go` 只在 `wmUserSystray` 分支处理它，直接投递的那条落到 `DefWindowProc`（左键正常、右键无反应）。`tray/uipi_windows.go` 的 `WndProcInterceptor` 挂在 `WindowsOptions.WndProcInterceptor` 上补住这条，只对父窗口为 `HWND_MESSAGE` 的消息窗口生效；同时 `start` 里显式 `OnRightClick(OpenMenu)`，并用 `ChangeWindowMessageFilter(Ex)` 放行 `WM_USER+1`（提权进程收不到非提权 explorer 的回调）。② 托盘语言不跟随系统 —— `isChinese` 原来只看 `LC_ALL`/`LC_MESSAGES`/`LANG`，Windows 不设这些变量所以永远英文；改为「显式语言 > locale 变量（`C`/`POSIX` 哨兵忽略）> 系统 UI 语言」，系统语言在 `lang_windows.go` 用 `GetUserDefaultUILanguage` 取主语言 ID | presentation/tray + main.go + docs |

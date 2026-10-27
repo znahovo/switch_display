@@ -56,6 +56,9 @@ tasks:
         platforms: [windows]
       - cmd: rm -f *.syso
         platforms: [linux, darwin]
+      - task: bundle:deskflow
+        vars:
+          ARCH: '{{.ARCH}}'
     vars:
       BUILD_FLAGS: '{{if eq .DEV "true"}}{{if or .EXTRA_TAGS (eq .OBFUSCATED "true")}}-tags {{if eq .OBFUSCATED "true"}}wails_obfuscated{{if .EXTRA_TAGS}},{{end}}{{end}}{{.EXTRA_TAGS}} {{end}}-buildvcs=false -gcflags=all="-l"{{else}}-tags production{{if eq .OBFUSCATED "true"}},wails_obfuscated{{end}}{{if .EXTRA_TAGS}},{{.EXTRA_TAGS}}{{end}} -trimpath -buildvcs=false -ldflags="-w -s -H windowsgui"{{end}}'
     env:
@@ -104,6 +107,30 @@ tasks:
       FORMAT: '{{.FORMAT | default "nsis"}}'
       INSTALL_SCOPE: '{{.INSTALL_SCOPE | default "machine"}}'
 
+  bundle:deskflow:
+    summary: Places the trimmed Deskflow runtime next to the executable
+    desc: |
+      Copies `build/deskflow/windows/<arch>` to `bin/deskflow`, which is where
+      switch_display looks for `deskflow-core.exe` (relative to its own
+      executable). The NSIS installer packages the same tree into
+      `$INSTDIR\deskflow`.
+
+      Skip with BUNDLE_DESKFLOW=false when you don't need the sharing feature.
+    internal: true
+    cmds:
+      - |
+        if [ "{{.BUNDLE_DESKFLOW | default "true"}}" = "false" ]; then
+          echo "跳过内置 Deskflow（BUNDLE_DESKFLOW=false）"
+          exit 0
+        fi
+        ./build/deskflow/fetch.sh windows {{.ARCH}}
+        rm -rf "{{.BIN_DIR}}/deskflow"
+        mkdir -p "{{.BIN_DIR}}"
+        cp -R "build/deskflow/windows/{{.ARCH}}" "{{.BIN_DIR}}/deskflow"
+        echo "已内置 Deskflow 运行时 -> {{.BIN_DIR}}/deskflow"
+    vars:
+      ARCH: '{{.ARCH | default ARCH}}'
+
   generate:syso:
     summary: Generates Windows `.syso` file
     dir: build
@@ -123,11 +150,16 @@ tasks:
     cmds:
       # Create the Microsoft WebView2 bootstrapper if it doesn't exist
       - wails3 generate webview2bootstrapper -dir "{{.ROOT_DIR}}/build/windows/nsis"
+      # 先把 Deskflow 运行时拉下来：安装包要把它一起装进 $INSTDIR\deskflow。
+      - task: common:deskflow:bundle
+        vars:
+          GOOS: windows
+          ARCH: '{{.ARCH}}'
       - |
         {{if eq OS "windows"}}
-        makensis {{if eq .INSTALL_SCOPE "user"}}-DWAILS_INSTALL_SCOPE=user -DREQUEST_EXECUTION_LEVEL=user {{end}}-DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\{{.APP_NAME}}.exe" project.nsi
+        makensis {{if eq .INSTALL_SCOPE "user"}}-DWAILS_INSTALL_SCOPE=user -DREQUEST_EXECUTION_LEVEL=user {{end}}-DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\{{.APP_NAME}}.exe" -DARG_WAILS_DESKFLOW_DIR="{{.ROOT_DIR}}\build\deskflow\windows\{{.ARCH}}" project.nsi
         {{else}}
-        makensis {{if eq .INSTALL_SCOPE "user"}}-DWAILS_INSTALL_SCOPE=user -DREQUEST_EXECUTION_LEVEL=user {{end}}-DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}/{{.BIN_DIR}}/{{.APP_NAME}}.exe" project.nsi
+        makensis {{if eq .INSTALL_SCOPE "user"}}-DWAILS_INSTALL_SCOPE=user -DREQUEST_EXECUTION_LEVEL=user {{end}}-DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}/{{.BIN_DIR}}/{{.APP_NAME}}.exe" -DARG_WAILS_DESKFLOW_DIR="{{.ROOT_DIR}}/build/deskflow/windows/{{.ARCH}}" project.nsi
         {{end}}
     vars:
       ARCH: '{{.ARCH | default ARCH}}'
@@ -136,9 +168,16 @@ tasks:
 
   create:msix:package:
     summary: Creates an MSIX package
+    desc: |
+      NOTE: `wails3 tool msix` only packages the single executable, so the
+      bundled Deskflow runtime (bin/deskflow) is NOT included and the installed
+      app will have no keyboard/mouse sharing. Use the default NSIS format
+      (FORMAT=nsis) when you need a self-contained installer.
     deps:
       - task: build
     cmds:
+      - |-
+        echo "WARNING: MSIX packaging drops the bundled Deskflow runtime; sharing will be unavailable."
       - |-
         wails3 tool msix \
           --config "{{.ROOT_DIR}}/build/config.yml" \

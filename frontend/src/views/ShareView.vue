@@ -316,6 +316,10 @@ const coreStateText = computed(() => {
       <p class="mt-2 truncate font-mono text-[11px] text-muted-foreground/75">
         {{ store.state.deskflowBinary || store.state.deskflowDir }}
       </p>
+      <!-- GPL-2.0 的署名要求：内置分发了 Deskflow 的二进制，必须说明来源。 -->
+      <p class="mt-1 text-[11px] leading-relaxed text-muted-foreground/70">
+        {{ t("share.license") }}
+      </p>
     </Card>
 
     <p v-if="store.noticeText(t)" class="text-[12px] text-muted-foreground">

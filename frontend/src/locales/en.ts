@@ -76,9 +76,9 @@ export default {
     title: "Shared keyboard",
     hint: "Discover another machine on your LAN, pick one as the host, and both share a single keyboard and mouse.",
     stop: "Stop sharing",
-    noDeskflow: "Deskflow not found",
+    noDeskflow: "Shared runtime missing",
     noDeskflowHint:
-      "Keyboard and mouse sharing is powered by Deskflow. Install it first (deskflow/deskflow on GitHub), then rescan.",
+      "Sharing is powered by the bundled Deskflow runtime. It is missing from this installation — likely the deskflow folder inside the app was removed, or this build was packaged with BUNDLE_DESKFLOW=false. Reinstalling restores it.",
     rescan: "Rescan",
     selfName: "Device name",
     selfNameHint: "How this machine appears to others. Change it any time.",
@@ -111,6 +111,8 @@ export default {
     coreStarting: "Starting",
     coreFailed: "Failed",
     coreStopped: "Stopped",
+    license:
+      "Sharing is provided by the bundled Deskflow runtime (GPL-2.0); source at github.com/deskflow/deskflow.",
     showLog: "Show log",
     hideLog: "Hide log",
     stillNotFound: "Still no Deskflow. Check where it is installed and try again.",

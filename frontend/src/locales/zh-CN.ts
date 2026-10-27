@@ -76,9 +76,9 @@ export default {
     title: "共享键鼠",
     hint: "同一局域网内发现另一台机器，选一台当主机，两台就能共用一套鼠标键盘。",
     stop: "停止共享",
-    noDeskflow: "没有找到 Deskflow",
+    noDeskflow: "共享运行时缺失",
     noDeskflowHint:
-      "共享键鼠由 Deskflow 提供，请先安装它（GitHub 上的 deskflow/deskflow），装好后再点重新检测。",
+      "共享键鼠由内置的 Deskflow 提供。当前安装里找不到它——可能是手动删掉了应用内的 deskflow 目录，或用 BUNDLE_DESKFLOW=false 打包的版本。重新安装可恢复。",
     rescan: "重新检测",
     selfName: "设备名称",
     selfNameHint: "对方在列表里看到的名字，随时可以改。",
@@ -111,6 +111,8 @@ export default {
     coreStarting: "启动中",
     coreFailed: "启动失败",
     coreStopped: "已停止",
+    license:
+      "共享功能由内置的 Deskflow 运行时代码提供（GPL-2.0），源码见 github.com/deskflow/deskflow。",
     showLog: "查看日志",
     hideLog: "收起日志",
     stillNotFound: "仍然没找到 Deskflow，确认安装位置后再试一次。",

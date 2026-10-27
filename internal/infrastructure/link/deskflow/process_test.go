@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -301,6 +302,52 @@ func TestFinderCaches(t *testing.T) {
 	}
 	if first != second {
 		t.Fatalf("Find() not cached: %q vs %q", first, second)
+	}
+}
+
+// TestBundledCoreUnder 验证内置运行时的定位只依赖目录布局。
+//
+// 打包时 macOS 把它放在 .app/Contents/Resources/deskflow/，Windows 放在
+// exe 同级 deskflow/（NSIS 装到 $INSTDIR\deskflow）。这里两边都造一遍，
+// 因为一旦路径算错，用户装完软件就找不到 deskflow-core。
+func TestBundledCoreUnder(t *testing.T) {
+	dir := t.TempDir()
+
+	// Windows 布局（也与 macOS 的退路一致）：<exeDir>/deskflow/deskflow-core
+	if err := os.MkdirAll(filepath.Join(dir, bundleDirName), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	bin := filepath.Join(dir, bundleDirName, coreBinName+exeSuffix())
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if got := bundledCoreUnder(dir); got != bin {
+		t.Fatalf("bundledCoreUnder() = %q, want %q", got, bin)
+	}
+
+	// macOS 布局：<exeDir>/../Resources/deskflow/Contents/MacOS/deskflow-core
+	if runtime.GOOS == "darwin" {
+		macDir := t.TempDir()
+		exeDir := filepath.Join(macDir, "Contents", "MacOS")
+		resDir := filepath.Join(macDir, "Contents", "Resources", bundleDirName, "Contents", "MacOS")
+		if err := os.MkdirAll(exeDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(exeDir) error = %v", err)
+		}
+		if err := os.MkdirAll(resDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(resDir) error = %v", err)
+		}
+		macBin := filepath.Join(resDir, coreBinName)
+		if err := os.WriteFile(macBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatalf("WriteFile(mac) error = %v", err)
+		}
+		if got := bundledCoreUnder(exeDir); got != macBin {
+			t.Fatalf("bundledCoreUnder(mac) = %q, want %q", got, macBin)
+		}
+	}
+
+	// 目录里什么都没有时必须返回空串，而不是猜一个不存在的路径。
+	if got := bundledCoreUnder(t.TempDir()); got != "" {
+		t.Fatalf("bundledCoreUnder(empty) = %q, want empty", got)
 	}
 }
 

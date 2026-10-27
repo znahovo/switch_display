@@ -406,7 +406,7 @@ cgo 只在 macOS 上使用，且只链系统 framework（IOKit/CoreFoundation）
 9. **bootstrap + main.go** 装配（✅ 第二步完成托盘接线与关窗拦截）。
 10. **前端**（✅ 第二步三页 + ✅ UI 改版）：Tailwind v4 + shadcn 风格组件 + Pinia + vue-i18n + hash 路由（切换台 / 信号源 / 设置）+ 快捷键录制；左侧可折叠 sidebar、编辑器置顶、信号源页表格化对齐。
 11. **打磨**：空状态、错误文案、i18n 骨架、README、`wails3 build` 出 app；同步 `docs/architecture.md` 的状态列。
-12. **局域网共享键鼠（✅ 代码完成，真机联调待做）**：需求是「两台机器都打开本软件 → 自发现 → 用户选一台当主机 → 共用一套鼠标键盘」。结论是 Deskflow 自身没有任何发现机制，因此由本软件实现 UDP 发现与配对信令，再把 `deskflow-core` 作为子进程按配置拉起。落点：`domain/link`（身份/报文/配对记录）、`application/linkapp`（编排）、`infrastructure/link/discovery`（UDP 24801）、`infrastructure/link/deskflow`（证书/INI/布局/信任库/进程）、`presentation/wailsservice/linkservice.go`、前端 `/share` 页。详见 [deskflow-integration.md](deskflow-integration.md)（含调研证据与执行进度）。
+12. **局域网共享键鼠（✅ 代码完成，真机联调待做）**：Deskflow 运行时**随应用内置**（构建期 `build/deskflow/fetch.sh` 下载+校验+裁剪，打包时拷进 `.app/Contents/Resources/deskflow/` 或 `$INSTDIR\deskflow\`），用户不需要自己装 Deskflow；需求是「两台机器都打开本软件 → 自发现 → 用户选一台当主机 → 共用一套鼠标键盘」。结论是 Deskflow 自身没有任何发现机制，因此由本软件实现 UDP 发现与配对信令，再把 `deskflow-core` 作为子进程按配置拉起。落点：`domain/link`（身份/报文/配对记录）、`application/linkapp`（编排）、`infrastructure/link/discovery`（UDP 24801）、`infrastructure/link/deskflow`（证书/INI/布局/信任库/进程）、`presentation/wailsservice/linkservice.go`、前端 `/share` 页。详见 [deskflow-integration.md](deskflow-integration.md)（含调研证据与执行进度）。
 
 ---
 
