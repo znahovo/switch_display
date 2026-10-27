@@ -45,14 +45,31 @@ func labelsFor(lang string) labels {
 }
 
 // isChinese 判断该用中文还是英文文案。
+//
+// 优先级：配置里的语言 > locale 环境变量 > 系统 UI 语言。
+// 中间那层是为 Unix 留的（LC_ALL/LANG 是那边的惯例）；Windows 不设这些变量，
+// 所以那边会一路落到 systemUILanguageIsChinese。注意只要环境变量里出现了
+// 语言就当场定案，不再问系统——否则显式设成 en_US 的进程在中文 Windows 上
+// 会被系统语言覆盖回去。
 func isChinese(lang string) bool {
 	if lang != "" {
 		return strings.HasPrefix(strings.ToLower(lang), "zh")
 	}
+	sawLocale := false
 	for _, key := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
-		if strings.Contains(strings.ToLower(os.Getenv(key)), "zh") {
+		value := strings.ToLower(os.Getenv(key))
+		// "C" / "POSIX" 是「没有指定区域」的哨兵值，不算有效信息：有些
+		// 环境（ssh、CI、部分终端）会强行设成它，不能让它把系统语言挡掉。
+		if value == "" || value == "c" || value == "posix" {
+			continue
+		}
+		sawLocale = true
+		if strings.Contains(value, "zh") {
 			return true
 		}
 	}
-	return false
+	if sawLocale {
+		return false
+	}
+	return systemUILanguageIsChinese()
 }

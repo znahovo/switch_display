@@ -64,3 +64,29 @@ func TestLabelsForBothLanguages(t *testing.T) {
 		}
 	}
 }
+func TestIsChineseIgnoresCLocale(t *testing.T) {
+	// "C" / "POSIX" 是「没指定区域」的哨兵值，不能当成一个有效语言把它
+	// 挡在系统语言前面——否则 ssh、CI、部分终端里托盘会莫名其妙变英文。
+	// 这种情况下应该一路落到系统语言，结果与直接问系统一致。
+	for _, key := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
+		t.Run(key, func(t *testing.T) {
+			t.Setenv("LC_ALL", "")
+			t.Setenv("LC_MESSAGES", "")
+			t.Setenv("LANG", "")
+			t.Setenv(key, "C")
+			if got, want := isChinese(""), systemUILanguageIsChinese(); got != want {
+				t.Errorf("isChinese(\"\") with %s=C = %v, want %v (system language)", key, got, want)
+			}
+		})
+	}
+}
+
+func TestIsChineseLocaleBeatsSystemLanguage(t *testing.T) {
+	// 显式设了非中文 locale 时就要听它的，不能被系统语言翻回去。
+	t.Setenv("LC_ALL", "en_US.UTF-8")
+	t.Setenv("LC_MESSAGES", "")
+	t.Setenv("LANG", "")
+	if isChinese("") {
+		t.Error("explicit en_US.UTF-8 must win over system language")
+	}
+}

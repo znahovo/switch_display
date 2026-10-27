@@ -101,8 +101,18 @@ func (t *Tray) Start() error {
 	tray.SetTooltip("Switch Display")
 	tray.OnClick(func() { t.ShowWindow() })
 	t.tray = tray
+	setActive(t)
 
-	// 左键点击托盘图标直接弹菜单（macOS 用户的习惯），右键也走菜单。
+	// 右键菜单：Wails 在 Windows 上默认的右键处理会漏掉一条消息，这里显式
+	// 兜一层（见 uipi_windows.go）。其它平台 Wails 的默认行为是对的，
+	// 显式设置也是同一个结果，就不分平台了。
+	tray.OnRightClick(func() { t.OpenMenu() })
+
+	// 提权运行时放行来自任务栏的回调消息（UIPI），否则托盘点击收不到。
+	allowTrayCallbackFromShell(t.log)
+
+	// 先画一版菜单：托盘图标这时还没挂上去，但 SetMenu 只存字段，Run 之后
+	// 会用它初始化 popup。
 	t.Refresh()
 
 	// 配置变化（前端保存、导入、热插拔）后重建菜单：菜单是配置的投影，
@@ -113,6 +123,17 @@ func (t *Tray) Start() error {
 		})
 	}
 	return nil
+}
+
+// OpenMenu 弹出托盘菜单。
+//
+// 抽成方法是为了让平台层（Windows 的 WndProcInterceptor）能在不持有
+// SystemTray 引用的情况下复用同一入口。
+func (t *Tray) OpenMenu() {
+	if t.tray == nil {
+		return
+	}
+	t.tray.OpenMenu()
 }
 
 // HideWindow 把主窗口收进后台（关窗口的语义）。

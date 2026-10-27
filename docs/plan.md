@@ -279,6 +279,8 @@ LG alternate（VCP 0xF4，chip address 0x50）：DP1=208、DP2=209、HDMI1=144�
 - 第 7 项「切回本机」的绑定存在 `settings.selfSourceId`（**存信号源 ID 而不是端口值**：用户改源端口时它会自动跟随，不会指向过期端口）；为空时整项不显示
 - 关窗口 = 隐藏到后台（`MacOptions.ApplicationShouldTerminateAfterLastWindowClosed = false` + 窗口关闭拦截 `Hide()`）
 - 菜单栏「退出」才真退
+- **右键托盘图标**：Wails beta.34 在 Windows 上漏了资源管理器直接投递的 `WM_CONTEXTMENU`（左键正常、右键无反应），由 `tray/uipi_windows.go` 的 `WndProcInterceptor` 补上；同时用 `ChangeWindowMessageFilter(Ex)` 放行 `WM_USER+1`，否则 `requireAdministrator` 运行时会因 UIPI 收不到任务栏的回调消息
+- **语言**：托盘文案不读 vue-i18n，`labelsFor` 按「设置里的语言 > `LC_ALL`/`LC_MESSAGES`/`LANG`（忽略 `C`/`POSIX`）> 系统 UI 语言」判断；Windows 的系统 UI 语言用 `GetUserDefaultUILanguage` 取（`lang_windows.go`），Unix 才靠环境变量
 
 ### 全局快捷键
 

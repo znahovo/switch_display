@@ -11,6 +11,7 @@ import (
 	wails "github.com/wailsapp/wails/v3/pkg/application"
 
 	"github.com/znahovo/switch-display/internal/bootstrap"
+	"github.com/znahovo/switch-display/internal/presentation/tray"
 )
 
 //go:embed all:frontend/dist
@@ -33,6 +34,9 @@ func main() {
 			// 那样「关闭窗口 = 收进托盘」就变成了「退出程序」。
 			// 真正的退出走托盘菜单的「退出」（app.Quit）。
 			DisableQuitOnLastWindowClosed: true,
+			// 托盘右键：Wails 的托盘窗口漏处理了资源管理器直接投递的
+			// WM_CONTEXTMENU，靠这个拦截补上（非 Windows 平台是空实现）。
+			WndProcInterceptor: tray.InterceptWindowMessage,
 		},
 	})
 
