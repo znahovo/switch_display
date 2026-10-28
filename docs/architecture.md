@@ -321,7 +321,7 @@ switch_display/
 | `application/linkapp` | 编排「发现 → 配对握手 → 写信任库/布局 → 启停 core」，聚合成一个状态 DTO | 不含密钥/证书的字节级细节（在 infrastructure）；不直接收发 UDP | ✅ 第三步 |
 | `infrastructure/link/discovery` | UDP 广播、单播信令收发、对端表与 TTL 过期 | 不理解配对语义（回调给用例层） | ✅ 第三步 |
 | `infrastructure/link/deskflow` | 定位 `deskflow-core`、自签证书与指纹、写 INI/布局/信任库、子进程生命周期与日志 | 不决定「谁是主机」（用例层决定） | ✅ 第三步 |
-| `infrastructure/logging` | 进程内日志总线：环形缓冲（2000 条）、slog handler、`Tee` 双写、2MiB 文件滚动、`Raw` 承接外部进程原文 | 不决定日志说什么、不做级别策略（级别只用于展示与筛选） | ✅ 第四步 |
+| `infrastructure/logging` | 进程内日志总线：环形缓冲（800 条）、slog handler、`Tee` 双写、`Filtered` 按消息筛框架噪音、2MiB 文件滚动、`Raw` 承接外部进程原文 | 不决定日志说什么、不做业务级别策略（级别只用于展示与筛选）；「哪些框架消息值得留」的判断在 bootstrap | ✅ 第五步 |
 | `application/logapp` | 按游标做增量查询、判定「中间有日志被挤掉」、汇总来源列表 | 不持有缓冲（端口注入）、不做渲染 | ✅ 第四步 |
 | `presentation/wailsservice` | 暴露给前端的 API、DTO 映射、错误 code | 不含流程控制 | ✅ 第一步（第三步加 `LinkService`，第四步加 `LogService`） |
 | `presentation/tray` | 菜单结构、图标、当前源打勾、点击转发、关窗隐藏 | 不直接调 ddc | ✅ 第二步 / Windows 图标与文案已适配 |
@@ -740,10 +740,11 @@ sequenceDiagram
 flowchart LR
     subgraph P["进程内"]
         direction TB
-        A["app 自己的 slog 调用"]
-        W["Wails 系统消息<br/>(WebView2 / 资源服务器)"]
+        A["app 自己的 slog 调用<br/>(SystemLogger)"]
+        W["Wails 系统消息<br/>(WailsLogger)"]
+        F2["Filtered<br/>丢 Handling request /<br/>Registering bound method 等"]
         D["deskflow-core 子进程<br/>stdout + stderr"]
-        B["logging.Bus<br/>环形 2000 条 + Seq"]
+        B["logging.Bus<br/>环形 800 条 + Seq"]
         F["FileWriter<br/>app.log（2MiB 滚动）"]
         T["终端 TextHandler<br/>(dev 时可见)"]
         E["Emit log:appended<br/>(200ms 合批)"]
@@ -755,7 +756,8 @@ flowchart LR
     end
 
     A --> B
-    W --> B
+    W --> F2
+    F2 --> B
     D -->|"LogSink.Raw"| B
     B --> F
     B --> T
@@ -765,11 +767,12 @@ flowchart LR
     S --> V
 ```
 
-**三条必须守住的规则**：
+**四条必须守住的规则**：
 
 1. **总线必须是进程级单例，且在 `wails.New` 之前建好**：Wails 在构造时就把 logger 固定下来，之后再改 `slog.SetDefault` 对它的系统消息无效。
-2. **`Raw` 不能改一个字节**：Deskflow 的崩溃原因往往就是某行英文原文，格式化/截断都会毁掉线索。
-3. **事件必须合批**：子进程一次启动能吐几十行，逐行广播会让前端每 200ms 触发一次重渲染。
+2. **业务 logger 与框架 logger 必须是两条**：业务用 `SystemLogger`（`source=app`，Debug 起全收），框架用 `WailsLogger`（`source=wails`，`Filtered` 丢掉每次调用都打的消息）。共用一条会让框架噪音把业务日志彻底埋掉——这是用户实际反馈过的问题。
+3. **`Raw` 不能改一个字节**：Deskflow 的崩溃原因往往就是某行英文原文，格式化/截断都会毁掉线索。
+4. **事件必须合批**：子进程一次启动能吐几十行，逐行广播会让前端每 200ms 触发一次重渲染。
 
 ---
 
@@ -798,7 +801,7 @@ flowchart LR
 - **context**：所有可能阻塞的端口方法都收 `ctx`；统一起点 4s（写/读），由 `application` 设 deadline。
 - **并发**：`Snapshot` 由 `configapp` 用 `sync.RWMutex` 保护；DDC 读写**串行化**（一个 `sync.Mutex` 在 ddc 实现内，因为 I2C 通道不并发安全）。切换操作加"进行中"标志，第二次点击直接返回"正在切换"。
 - **cgo 边界**：C 只负责"帧拼装 + IOAVService 调用"，**不持有 Go 指针**、不回调 Go、不做内存分配（用调用方传入的 `C.malloc` / 固定 `[]C.uint8_t`）。C 返回错误码，Go 侧翻译。
-- **日志**：`Logger` 端口注入，底层是「终端 + 进程内总线」双写（`logging.Tee`），所以界面上「日志」页看到的就是同一批输出。外部进程（`deskflow-core`）的原文走 `LogSink.Raw`，**不做任何格式化**。后端自己产生、要显示给用户的文案一律用稳定标识（`client_started` / `exit_config` / `fingerprint_invalid` …），由前端 `locales/*` 翻译；只有对端（Deskflow）吐出的英文原文原样透传。
+- **日志**：`Logger` 端口注入，底层是「终端 + 进程内总线」双写（`logging.Tee`），所以界面上「日志」页看到的就是同一批输出。**总线里只放对用户有意义的日志**：业务代码一律走 `SystemLogger`（`source=app`）；交给 Wails 的是另一条 `WailsLogger`（`source=wails`，级别 Info 起、并经 `keepWailsLog` 过滤掉 asset 请求/绑定注册之类的逐次调用噪音），WARN 及以上永远保留。框架消息的过滤规则只写在 `bootstrap.keepWailsLog` 一处，`logging` 包只提供 `Filtered` 这个通用工具。外部进程（`deskflow-core`）的原文走 `LogSink.Raw`，**不做任何格式化**。后端自己产生、要显示给用户的文案一律用稳定标识（`client_started` / `exit_config` / `fingerprint_invalid` …），由前端 `locales/*` 翻译；只有对端（Deskflow）吐出的英文原文原样透传。
 - **可测试性**：见 §11「测试策略」。一句话规则——**用例层只依赖端口，测试里全用 fake；真实的 DDC 只在真机上跑。**
 
 ---
@@ -823,7 +826,8 @@ flowchart LR
 | ADR-014 | 共享状态存**独立的 `link.json`**，不塞进 `config.json` | 设备 ID / 配对记录都是运维态：丢了只是重新配一次，不需要事务性。塞进 `config.json` 就得升 `version` 触发迁移，代价与收益不成比例；独立文件还让 `LinkStore.Load` 可以在损坏时静默回落空快照 | 并入 `config.json`（为一个可丢字段引入配置迁移） |
 | ADR-015 | Deskflow 运行时**随应用内置**（构建期下载+校验+裁剪，二进制不进仓库），而不是要求用户自己安装 | 用户为了共享键鼠先去 GitHub 装一个 Deskflow 再回来点按钮，等于把集成做废；而 57MB(macOS)/38MB(Windows) 的二进制提交进 git 会让仓库不可维护，`go:embed` 又会让每次启动都映射这堆动态库。放 `build/deskflow/<os>/<arch>/`（gitignored）+ 打包期拷进产物，兼顾自包含与仓库轻量 | 要求用户自装（体验断裂）；提交二进制（仓库膨胀）；`go:embed`（启动成本 + 仍需在源码树里放二进制） |
 | ADR-016 | 日志改用**进程内总线**（slog `Tee` 双写到终端与环形缓冲）+ 前端游标增量拉取，而不是把 `slog` 输出改成文件再由前端读文件 | 双击打开的 `.app`/`.exe` 没有终端，共享键鼠的问题几乎全在 `deskflow-core` 的 stderr 里；让前端读日志文件需要额外处理编码（Windows 上不是 UTF-8 就乱码）、滚动、以及「用户还没打开就错过了」的时序问题。总线还能把 Wails 自己的系统消息一起收进来 | 前端直接读 `app.log`（编码/滚动/时序全要自己解）；只写文件让用户去找（违背「让用户少操作」） |
-| ADR-017 | 日志列表用**自建虚拟滚动组件**（`components/VirtualList.vue` + `lib/virtual.ts` 纯函数），不引 `vue-virtual-scroller` 之类的库 | 缓冲上限 2000 条、每行还会折行，全量挂 DOM 后每次增量都要重排整棵列表，滚动明显掉帧；而这里需要的只是「纵向 + 行高不一 + 只渲染视口」一件事（一次前缀和 + 一次二分 + 两个 ResizeObserver）。自己写把算法抽成纯函数进 `lib/virtual.ts`，可以用 `node --test` 直接测（引库则只能靠真机看）。行高按**条目对象**记在 `WeakMap` 里，因为条目被裁剪/筛选后下标会变、对象不会 | 引入虚拟列表依赖（多一份体积与打包风险，且行高实测/锚点行为仍要自己调）；只做「分页显示」（用户翻不到相邻上下文） |
+| ADR-017 | 日志列表用**自建虚拟滚动组件**（`components/VirtualList.vue` + `lib/virtual.ts` 纯函数），不引 `vue-virtual-scroller` 之类的库 | 缓冲上限（当时 2000 条，ADR-018 后为 800 条）、每行还会折行，全量挂 DOM 后每次增量都要重排整棵列表，滚动明显掉帧；而这里需要的只是「纵向 + 行高不一 + 只渲染视口」一件事（一次前缀和 + 一次二分 + 两个 ResizeObserver）。自己写把算法抽成纯函数进 `lib/virtual.ts`，可以用 `node --test` 直接测（引库则只能靠真机看）。行高按**条目对象**记在 `WeakMap` 里，因为条目被裁剪/筛选后下标会变、对象不会 | 引入虚拟列表依赖（多一份体积与打包风险，且行高实测/锚点行为仍要自己调）；只做「分页显示」（用户翻不到相邻上下文） |
+| ADR-018 | **业务日志与框架日志分成两条 logger**（`SystemLogger` → Wails 之前交给 `slog.SetDefault`、`source=app`；`WailsLogger` → 交给 `wails.New`、`source=wails`，经 `logging.Filtered` 丢掉 `Handling request` / `Asset Request` / `handleWebViewRequest` / `Registering bound method` / `Starting up service` / `Binding call complete` 六类逐次调用消息，WARN 及以上永远保留） | 用户实测反馈「很多无用的日志 还有很多斜线那种」（斜线＝带 URL 的资源请求行）。这些消息的级别写死在 Wails 源码里，调用方改不了，只能在我们自己的 handler 上按消息拦；但框架的 `Build Info` / `Platform Info` 又是报 bug 时最有用的两行，所以不能简单降到 Warn 一刀切。过滤规则只留在 `bootstrap.keepWailsLog` 一处，`logging` 包只提供通用的 `Filtered`，避免基础设施层认识某个框架的消息文本 | 把 Wails 的 logger 直接设为 `nil`/丢弃（丢掉 Build/Platform Info 与真实 WARN）；整体提到 Warn（用户再也看不到框架警告）；在 `logging` 包里硬编码 Wails 消息（基础设施层耦合具体框架） |
 
 ---
 
@@ -847,9 +851,9 @@ flowchart LR
 | `infrastructure/link/deskflow` | INI 键、布局双向性、信任库格式、PEM 段序、子进程启停与退出码 | `#!/bin/sh` 假 core + `t.TempDir()` | 无（不需要真 Deskflow） |
 | `application/linkapp` 联调 | 双 Service 真 UDP 互相发现 + 完整配对握手 + 文件落盘 | `//go:build link_integration`，端口 24981，core 用假脚本 | 本机网络栈（不需要真 Deskflow） |
 | `application/linkapp` 真 core | 真 `deskflow-core` 的 TLS 指纹互认、双向角色落定 | `//go:build deskflow_real`，端口 24983 | 装了 Deskflow 且显示器已唤醒 |
-| `infrastructure/logging` | Seq 单调、增量 Since、环形淘汰与 Dropped、级别解析、`Tee` 双写、200ms 合批、文件滚动 | `t.TempDir()` 真文件 + 假 events | 无 |
+| `infrastructure/logging` | Seq 单调、增量 Since、环形淘汰与 Dropped、级别解析、`Tee` 双写、`Filtered` 按消息筛且尊重下游级别门槛、200ms 合批、文件滚动 | `t.TempDir()` 真文件 + 假 events | 无 |
 | `application/logapp` | 游标查询、limit 截断、Lost 判定、空/nil 缓冲 | fake `LogBuffer` | 无 |
-| `bootstrap` | 装配完整性、失败快速返回 | `wails.New` 但不 `Run` | 无 |
+| `bootstrap` | 装配完整性、失败快速返回、`keepWailsLog` 白名单/黑名单（表驱动）、`WailsLogger != SystemLogger` 且框架噪音确实没进总线 | `wails.New` 但不 `Run` | 无 |
 | 前端 `lib/*.ts` | 虚拟滚动的区间计算、前缀和、锚点补偿 | `node --test`（Node 直接剥类型跑 TS，`npm test`） | 无 DOM |
 
 约定：
@@ -863,6 +867,7 @@ flowchart LR
 7. **进程级单例（日志总线）的测试必须用游标而不是假设空缓冲**：`go test -count=2` 时上一条用例写进去的日志还在，`Query(0, 10)` 会拿到多条。
 8. **前端只测纯函数，且用 Node 自带的 `node --test`**：组件渲染、ResizeObserver、滚动这些交给真机验收；能脱 DOM 算的都挪进 `lib/*.ts` 再测。测试文件 import 必须写 `.ts` 后缀（所以 `tsconfig.json` 开了 `allowImportingTsExtensions`），命令是 `npm test`（`node --test "src/**/*.test.ts"`，**不能省略 glob**，`node --test src/` 在 Node 22 上会报 `test failed`）。
 9. **需要外部二进制的测试只用 tag + 环境变量开启，默认 skip**：`DESKFLOW_CORE=<path> go test -tags deskflow_real ./internal/application/linkapp/ -run TestRealCorePair -v`。不要在测试里写死 `/Applications/...` 路径，否则 CI 上必然失败。
+10. **「哪些日志该留」是规则，必须有测试**：`bootstrap.keepWailsLog` 用表驱动钉住（噪音六类 × 保留两类 × WARN 以上全留），并有一条用例断言 `WailsLogger` 与 `SystemLogger` 不是同一条、且噪音确实没进总线。这类规则一旦回退，只会表现为「日志页又变吵了」，没有测试就没人发现。
 
 跑法：`go test ./internal/... -cover`、`go vet ./internal/... .`、`gofmt -l internal/ main.go`、`cd frontend && npm test`。
 
@@ -916,3 +921,4 @@ flowchart LR
 | 2026-10-27 | **Windows 托盘两处修复**：① 右键菜单不弹出 —— 资源管理器在 NOTIFYICON_VERSION_4 下会把 `WM_CONTEXTMENU` 当普通窗口消息直接投给托盘窗口，Wails beta.34 的 `systemtray_windows.go` 只在 `wmUserSystray` 分支处理它，直接投递的那条落到 `DefWindowProc`（左键正常、右键无反应）。`tray/uipi_windows.go` 的 `WndProcInterceptor` 挂在 `WindowsOptions.WndProcInterceptor` 上补住这条，只对父窗口为 `HWND_MESSAGE` 的消息窗口生效；同时 `start` 里显式 `OnRightClick(OpenMenu)`，并用 `ChangeWindowMessageFilter(Ex)` 放行 `WM_USER+1`（提权进程收不到非提权 explorer 的回调）。② 托盘语言不跟随系统 —— `isChinese` 原来只看 `LC_ALL`/`LC_MESSAGES`/`LANG`，Windows 不设这些变量所以永远英文；改为「显式语言 > locale 变量（`C`/`POSIX` 哨兵忽略）> 系统 UI 语言」，系统语言在 `lang_windows.go` 用 `GetUserDefaultUILanguage` 取主语言 ID | presentation/tray + main.go + docs |
 | 2026-10-28 | **第四步：日志页**。新增 `infrastructure/logging`（环形 2000 条总线 + slog handler + `Tee` 双写 + `Raw` 承接子进程原文 + 2MiB 文件滚动）、`application/logapp`（游标增量查询 / Lost 判定 / 来源汇总）、`presentation/wailsservice/logservice.go`（`LogService`，4 个方法）、`application/dto/log.go`；新增 `EventLogAppended`（200ms 合批）；新增端口 `LogBuffer` / `LogSink` 与 `application.LogEntry`；`deskflow.Runtime` 增加 `SetSink`（原始输出旁路到总线，锁外回调避免拖住 `Status()`/`Stop()`）；**日志总线改为进程级单例并在 `wails.New` 之前注入 `wails.Options.Logger`**，使 WebView2/资源服务器等 Wails 系统消息也进日志页；前端 `/logs` 页 + `stores/log.ts` + 侧栏 `ScrollText` 入口 + 中英文案；core 状态说明补充 `exit_other` / `server_not_listening` 两个稳定标识（原来把中文写进后端）。§3 目录树、§4 状态列、§5 契约（`LogBuffer`/`LogSink`/`LogEntry`）、§7.5 日志上行图、§10 ADR-016、§11 测试表与第 7 条约定同步 | 全部层 + docs |
 | 2026-10-28 | **日志页虚拟滚动**。新增 `frontend/src/components/VirtualList.vue`（泛型组件：前缀和 + 二分定位 + `ResizeObserver` 实测行高 + 滚动锚点补偿 + `scrollToBottom`/`isAtBottom` 暴露）与 `frontend/src/lib/virtual.ts`（`buildEdges`/`findRange`/`topIndex`/`anchoredScrollTop` 纯函数）；`LogsView.vue` 改用它，**DOM 里固定只挂约 20 行而不是 2000 行**；`stores/log.ts` 的 `entries` 改 `shallowRef`（日志条目写入即不变，深层响应式只会为每条造 Proxy）；新增 `frontend/src/lib/virtual.test.ts`（11 用例）+ `npm test`（`node --test "src/**/*.test.ts"`，`tsconfig.json` 开 `allowImportingTsExtensions`）。新增 ADR-017；§3 目录树、§11 测试表与第 8 条约定同步 | 前端 + docs |
+| 2026-10-28 | **日志噪音收敛**。日志总线容量 2000 → **800**（`logging.DefaultCapacity`、`logapp.MaxLimit`、前端 `PAGE_SIZE`/`MAX_KEEP` 同步到 800/1600）；`logging` 新增通用 `Filtered(handler, keep)` 包装（恒 `Enabled`，按「级别 + 消息」二次判定，且仍尊重下游级别门槛）；`bootstrap` 拆出 **`WailsLogger()`**——交给 `wails.New` 的那条用 `source=wails` + `Filtered(bus, keepWailsLog)`，`keepWailsLog` 丢掉六类逐次调用噪音、WARN 及以上全留；`SystemLogger()` 仍供业务与 `slog.SetDefault`；前端 `stores/log.ts` 加 `hideFramework`（默认开）与 `FRAMEWORK_SOURCE`，`LogsView.vue` 新增「隐藏框架日志」勾选框 + 中英文案。实测一次启动写入 `app.log` 的行数从 ~70 降到 **8**（其中业务 4 行）。新增 ADR-018；§4 状态列、§7.5 图与四条规则、§9 日志约定同步 | 全部层 + docs |

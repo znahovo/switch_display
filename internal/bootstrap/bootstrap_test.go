@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -90,4 +91,59 @@ func TestStartFailsFastOnCancelledContext(t *testing.T) {
 // loggingEntry 造一条日志（省得在测试里 import 两个包）。
 func loggingEntry(msg string) logging.Entry {
 	return logging.Entry{Time: time.Now(), Level: logging.LevelInfo, Source: "app", Message: msg}
+}
+
+func TestKeepWailsLog(t *testing.T) {
+	// 这条规则决定了用户在日志页能看见多少框架噪音，值得单独钉住。
+	cases := []struct {
+		name  string
+		level slog.Level
+		msg   string
+		want  bool
+	}{
+		{"asset request dropped", slog.LevelInfo, "Handling request", false},
+		{"asset request debug dropped", slog.LevelDebug, "Asset Request:", false},
+		{"webview request dropped", slog.LevelDebug, "handleWebViewRequest: Processing request", false},
+		{"bound method dropped", slog.LevelDebug, "Registering bound method:", false},
+		{"service startup dropped", slog.LevelDebug, "Starting up service:", false},
+		{"binding call dropped", slog.LevelDebug, "Binding call complete:", false},
+		{"build info kept", slog.LevelInfo, "Build Info:", true},
+		{"platform info kept", slog.LevelInfo, "Platform Info:", true},
+		{"warn always kept", slog.LevelWarn, "Handling request", true},
+		{"error always kept", slog.LevelError, "Asset Request:", true},
+		{"debug non-noise dropped", slog.LevelDebug, "something else", false},
+	}
+	for _, c := range cases {
+		if got := keepWailsLog(c.level, c.msg); got != c.want {
+			t.Errorf("%s: keepWailsLog(%v, %q) = %v, want %v", c.name, c.level, c.msg, got, c.want)
+		}
+	}
+}
+
+func TestWailsLoggerIsSeparateFromAppLogger(t *testing.T) {
+	// 两者必须是不同的 logger：交给 Wails 的那份带噪音过滤，
+	// 业务这份不能（否则我们自己的 Debug 也会被同类规则误伤）。
+	if WailsLogger() == SystemLogger() {
+		t.Fatal("WailsLogger and SystemLogger must be distinct")
+	}
+	app := wails.New(wails.Options{Name: "Switch Display Test"})
+	got, err := Build(app)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	before := got.logs.Latest()
+
+	// 框架噪音不该进总线，框架的关键信息该进。
+	WailsLogger().Info("Handling request", "url", "/assets/index.js")
+	WailsLogger().Info("Build Info:")
+	batch := got.LogService.Query(before, 10)
+	var msgs []string
+	for _, e := range batch.Entries {
+		if e.Source == sourceWails {
+			msgs = append(msgs, e.Message)
+		}
+	}
+	if len(msgs) != 1 || msgs[0] != "Build Info:" {
+		t.Fatalf("wails entries = %v, want [Build Info:]", msgs)
+	}
 }

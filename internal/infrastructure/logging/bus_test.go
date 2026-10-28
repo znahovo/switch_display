@@ -359,3 +359,49 @@ func TestNewSkipZeroCapacity(t *testing.T) {
 		t.Errorf("Capacity = %d, want %d", b.Capacity(), DefaultCapacity)
 	}
 }
+
+func TestFilteredDropsByPredicate(t *testing.T) {
+	// Wails 的噪音级别写死在它自己源码里，只能在这一层按消息拦。
+	bus := New(Deps{Capacity: 10})
+	h := Filtered(bus.Handler("wails", slog.LevelInfo), func(_ slog.Level, msg string) bool {
+		return !strings.Contains(msg, "Handling request")
+	})
+	l := slog.New(h)
+	l.Info("Handling request", "url", "/assets/index.js")
+	l.Info("Build Info:")
+	if got := bus.Tail(10); len(got) != 1 || got[0].Message != "Build Info:" {
+		t.Fatalf("filtered = %+v", got)
+	}
+}
+
+func TestFilteredKeepsDownstreamLevelGate(t *testing.T) {
+	// Filtered 恒 Enabled，但下游自己的级别门槛仍要生效，
+	// 否则「只要 Warn」的 handler 会被 Debug 记录灌满。
+	bus := New(Deps{Capacity: 10})
+	l := slog.New(Filtered(bus.Handler("wails", slog.LevelWarn), nil))
+	l.Debug("debug line")
+	l.Warn("warn line")
+	got := bus.Tail(10)
+	if len(got) != 1 || got[0].Level != LevelWarn {
+		t.Fatalf("got = %+v", got)
+	}
+}
+
+func TestFilteredNilHandler(t *testing.T) {
+	if got := Filtered(nil, func(slog.Level, string) bool { return true }); got != nil {
+		t.Errorf("Filtered(nil) = %v, want nil", got)
+	}
+}
+
+func TestFilteredWithAttrsAndGroup(t *testing.T) {
+	bus := New(Deps{Capacity: 10})
+	h := Filtered(bus.Handler("wails", slog.LevelInfo), func(slog.Level, string) bool { return true })
+	l := slog.New(h).With("pid", 7).WithGroup("core")
+	l.Info("msg")
+	got := bus.Tail(10)
+	// slog 的组前缀作用于 handler 上挂的全部 attr（含 With 加进来的），
+	// 这条断言同时确认 Filtered 没有破坏这一点。
+	if len(got) != 1 || got[0].Fields != "core.pid=7" {
+		t.Fatalf("fields = %q", got[0].Fields)
+	}
+}

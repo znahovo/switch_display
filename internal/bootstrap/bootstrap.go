@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 
 	wails "github.com/wailsapp/wails/v3/pkg/application"
@@ -187,15 +188,29 @@ var (
 	systemOnce   sync.Once
 	systemLogs   *logging.Bus
 	systemLogger *slog.Logger
+	wailsLogger  *slog.Logger
 )
 
-// SystemLogger 返回「终端 + 界面」双写的 slog.Logger。
+// SystemLogger 返回本应用业务代码用的 slog.Logger（「终端 + 界面」双写）。
 //
-// main.go 必须在 wails.New 之前调用它。它同时被装成 slog 的默认 logger，
-// 于是所有 slog.Default() 调用点（含第三方库）都会进日志页。
+// 它同时被装成 slog 的默认 logger，于是所有 slog.Default() 调用点
+// （含第三方库）都会进日志页。
 func SystemLogger() *slog.Logger {
 	initSystemLogs()
 	return systemLogger
+}
+
+// WailsLogger 返回交给 Wails 框架自己的 logger。
+//
+// 它和 SystemLogger 分开，是因为框架的日志绝大多数与用户无关：每个静态
+// 资源请求一条 "Handling request"、每个前端绑定调用一条 DEBUG，启动时
+// 还会刷二十来条 "Registering bound method"。这些混进来会把日志页的
+// 有效信息埋掉（用户的原话是「很多无用的日志 还有很多斜线那种」）。
+// 但框架的少数几行恰恰关键（Build Info / Platform Info / 任何 WARN 以上），
+// 所以不是简单关掉，而是按消息筛。
+func WailsLogger() *slog.Logger {
+	initSystemLogs()
+	return wailsLogger
 }
 
 // SystemBus 返回与 SystemLogger 共用的日志总线。
@@ -220,13 +235,55 @@ func initSystemLogs() {
 		}
 
 		term := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})
+
+		// 业务日志：全部进总线。本项目自己的 Debug 只有六处（轮询失败、
+		// 丢弃坏包、Windows 托盘越界），数量少且都与排障相关。
 		systemLogger = slog.New(logging.Tee(term, systemLogs.Handler(sourceApp, slog.LevelDebug)))
 		slog.SetDefault(systemLogger)
+
+		// 框架日志：终端照旧全集（开发时仍要看得到），界面只留有用的。
+		wailsLogger = slog.New(logging.Tee(term,
+			logging.Filtered(systemLogs.Handler(sourceWails, slog.LevelInfo), keepWailsLog),
+		))
 	})
 }
 
-// sourceApp 是本进程日志在界面上的来源标签。
-const sourceApp = "app"
+// 日志来源标签。前端按这两个值区分「自己的代码」和「框架」。
+const (
+	sourceApp   = "app"
+	sourceWails = "wails"
+)
+
+// wailsNoise 是 Wails 里「每次调用都打一条、但排障时毫无价值」的消息前缀。
+//
+// 来源是 wails v3.0.0-beta.34：assetserver 的 "Handling request"、"Asset Request:"，
+// application 的 "handleWebViewRequest"、"Registering bound method"、
+// "Starting up service"、"Binding call complete"。它们的级别写死在
+// Wails 源码里（Info/Debug），调用方改不了，只能在 handler 这一层拦。
+var wailsNoise = []string{
+	"Handling request",
+	"Asset Request",
+	"handleWebViewRequest",
+	"Registering bound method",
+	"Starting up service",
+	"Binding call complete",
+}
+
+// keepWailsLog 决定一条框架日志是否进界面。
+//
+// 规则很简单：WARN 及以上全留（真正的问题），INFO 只留白名单里的
+// （Build Info / Platform Info 是用户报 bug 时最有用的两行）。
+func keepWailsLog(level slog.Level, msg string) bool {
+	if level >= slog.LevelWarn {
+		return true
+	}
+	for _, noisy := range wailsNoise {
+		if strings.Contains(msg, noisy) {
+			return false
+		}
+	}
+	return level >= slog.LevelInfo
+}
 
 // Start 在应用启动后执行一次性的初始化：读配置、枚举显示器、启动热插拔轮询。
 //

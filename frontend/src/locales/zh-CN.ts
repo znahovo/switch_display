@@ -190,6 +190,7 @@ export default {
     emptyHint: "操作一下共享键鼠，这里就会出现对应的记录。",
     hasError: "最近有错误",
     hasErrorHint: "红色那几行通常就是失败原因。若问题在 deskflow，可以复制全部日志发给开发者。",
+    hideFramework: "隐藏框架日志",
     filterLevel: "级别",
     filterSource: "来源",
     levelDebug: "调试",

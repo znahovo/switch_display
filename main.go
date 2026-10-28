@@ -24,7 +24,11 @@ func main() {
 		// Wails 在构造时就把 logger 固定下来，之后改 slog.SetDefault 无效；
 		// 所以必须在 wails.New 之前拿到底层的 logger，把 WebView2 /
 		// 资源服务器这些系统消息也送进界面上的日志页。
-		Logger: bootstrap.SystemLogger(),
+		//
+		// 但交给 Wails 的是**单独筛过**的那一份（WailsLogger），不是业务用的
+		// SystemLogger：框架每个静态资源请求都打一条，混进来会把用户真正
+		// 关心的日志埋掉。两者的差别见 bootstrap.initSystemLogs。
+		Logger: bootstrap.WailsLogger(),
 		Assets: wails.AssetOptions{
 			Handler: wails.AssetFileServerFS(assets),
 		},

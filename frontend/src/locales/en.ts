@@ -190,6 +190,7 @@ export default {
     emptyHint: "Try sharing your mouse and keyboard; entries will appear here.",
     hasError: "Errors present",
     hasErrorHint: "The red lines usually explain the failure. If it looks like a deskflow issue, copy everything and share it.",
+    hideFramework: "Hide framework logs",
     filterLevel: "Level",
     filterSource: "Source",
     levelDebug: "Debug",

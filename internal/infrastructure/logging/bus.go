@@ -39,9 +39,11 @@ type Entry = application.LogEntry
 
 // DefaultCapacity 是环形缓冲保留的条数。
 //
-// 2000 条足够覆盖一次「启动 → 配对 → 失败」的全过程，同时内存占用
-// 在 1MB 量级（每条平均 200 字节）。
-const DefaultCapacity = 2000
+// 800 条足够覆盖一次「启动 → 配对 → 失败」的全过程（实测一次完整启动
+// 只有二十来行业务日志），内存占用在一百多 KB 量级。缓冲只放用户真正
+// 会看的日志：框架噪音在源头就被挡掉了（见 bootstrap 的 WailsLogger），
+// 不靠这里的大容量去兜。
+const DefaultCapacity = 800
 
 // NotifyInterval 是「有新日志」事件的最小间隔。
 //
@@ -383,6 +385,47 @@ func renderValue(v slog.Value) string {
 		return strconv.Quote(s)
 	}
 	return s
+}
+
+// Filtered 在 h 之上再按 (级别, 消息) 做一层筛选。
+//
+// 用途：框架（Wails）自己的日志要么吵到没用（每个静态资源请求一条），
+// 要么恰恰是排障关键（Build Info / Platform Info）。只按级别调没法
+// 同时满足这两点，所以让调用方给一个判定函数。
+//
+// 注意它恒为 Enabled：判定要看到消息内容才能做，而 slog 在 Enabled
+// 阶段拿不到消息。代价只是让上游多做一次调用，比「放宽级别」便宜得多。
+func Filtered(h slog.Handler, keep func(level slog.Level, msg string) bool) slog.Handler {
+	if h == nil {
+		return nil
+	}
+	return &filteredHandler{next: h, keep: keep}
+}
+
+type filteredHandler struct {
+	next slog.Handler
+	keep func(level slog.Level, msg string) bool
+}
+
+func (f *filteredHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (f *filteredHandler) Handle(ctx context.Context, r slog.Record) error {
+	if f.keep != nil && !f.keep(r.Level, r.Message) {
+		return nil
+	}
+	// 下游自己的级别门槛仍要生效：Filtered 只做「额外」筛选。
+	if !f.next.Enabled(ctx, r.Level) {
+		return nil
+	}
+	return f.next.Handle(ctx, r.Clone())
+}
+
+func (f *filteredHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &filteredHandler{next: f.next.WithAttrs(attrs), keep: f.keep}
+}
+
+func (f *filteredHandler) WithGroup(name string) slog.Handler {
+	return &filteredHandler{next: f.next.WithGroup(name), keep: f.keep}
 }
 
 // Tee 把一条记录同时写到多个 handler。

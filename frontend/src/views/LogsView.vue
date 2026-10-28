@@ -166,6 +166,11 @@ function levelTone(level: string): string {
       </div>
 
       <div class="ml-auto flex items-center gap-2.5">
+        <!-- 默认勾上：Wails 每个资源请求/绑定调用都打一条，混进来就找不到自己的日志了 -->
+        <label class="flex cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground">
+          <Checkbox v-model="store.hideFramework" class="size-3.5" />
+          {{ t("logs.hideFramework") }}
+        </label>
         <label class="flex cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground">
           <Checkbox v-model="paused" class="size-3.5" />
           <Pause v-if="paused" class="size-3" />

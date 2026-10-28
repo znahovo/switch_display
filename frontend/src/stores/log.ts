@@ -1,7 +1,7 @@
 // 日志页的状态：环形缓冲的增量镜像 + 筛选。
 //
 // 为什么自己维护一份数组而不是每次整表重取：
-// 后端缓冲有 2000 条，Win 上子进程一次启动就能吐出几十行，
+// 后端缓冲有 800 条，Win 上子进程一次启动就能吐出几十行，
 // 每 200ms 全量搬一次 JSON 会让界面在执行「滚动到底部」和「重渲染」之间
 // 反复抖动。这里只追加新增的部分，并用 seq 作为 key 做稳定渲染。
 import { defineStore } from "pinia"
@@ -9,10 +9,13 @@ import { computed, ref, shallowRef } from "vue"
 import { logApi, type LogBatch, type LogEntryDTO } from "@/api"
 
 /** 一次拉取的条数上限（与后端 logapp.MaxLimit 一致）。 */
-const PAGE_SIZE = 2000
+const PAGE_SIZE = 800
 
 /** 界面最多保留的条数：再多用户也翻不动，且会让 DOM 变重。 */
-const MAX_KEEP = 4000
+const MAX_KEEP = 1600
+
+/** 框架（Wails）日志的来源标签，见 bootstrap 的 sourceWails。 */
+const FRAMEWORK_SOURCE = "wails"
 
 export const useLogStore = defineStore("log", () => {
   /**
@@ -41,14 +44,29 @@ export const useLogStore = defineStore("log", () => {
   const sources = ref<string[]>([])
   /** 是否自动跟随最新一行。 */
   const follow = ref(true)
+  /**
+   * 是否隐藏框架（Wails）日志。
+   *
+   * 默认隐藏：框架日志每发一个静态资源、每调一次绑定就打一条，
+   * 数量上是业务日志的十几倍，混在一起用户根本找不到自己的那几行。
+   * 但它对开发者仍有价值（Build Info / Platform Info），所以留一个开关。
+   */
+  const hideFramework = ref(true)
 
   /** 当前筛选下要显示的日志。 */
   const visible = computed(() => {
     const lv = level.value
     const src = source.value
-    if (!lv && !src) return entries.value
+    const skip = hideFramework.value
+    // 显式选了 wails 来源时，说明用户就是想看框架日志，
+    // 此时「隐藏框架」不该再把它拦下来。
+    const skipping = skip && src !== FRAMEWORK_SOURCE
+    if (!lv && !src && !skipping) return entries.value
     return entries.value.filter(
-      (e) => (!lv || e.level === lv) && (!src || e.source === src),
+      (e) =>
+        (!lv || e.level === lv) &&
+        (!src || e.source === src) &&
+        !(skipping && e.source === FRAMEWORK_SOURCE),
     )
   })
 
@@ -164,6 +182,7 @@ export const useLogStore = defineStore("log", () => {
     source,
     sources,
     follow,
+    hideFramework,
     visible,
     hasError,
     refresh,
