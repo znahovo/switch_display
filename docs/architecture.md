@@ -270,6 +270,7 @@ switch_display/
 │       ├── components/
 │       │   ├── PageShell.vue         # 页面骨架：标题 + 说明 + 右上操作区（三页统一起点）
 │       │   ├── SettingRow.vue        # 设置项行：左标题/说明 + 右控件（对齐由结构保证）
+│       │   ├── VirtualList.vue       # 虚拟滚动列表：只挂视口内的行（日志页用，行高实测）
 │       │   ├── SourceCard.vue        # 切换台的信号源卡片（当前态/结果徽标/切换按钮）
 │       │   ├── SourceEditor.vue      # 新增与编辑共用表单（两列网格 + 快捷键录制）
 │       │   └── ui/                   # 手写 shadcn 风格原子组件
@@ -285,7 +286,9 @@ switch_display/
 │       └── lib/
 │           ├── utils.ts             # cn()
 │           ├── theme.ts             # 跟随系统 light/dark
-│           └── accelerator.ts       # KeyboardEvent.code → accelerator 字符串 + ⌘⌥1 显示
+│           ├── accelerator.ts       # KeyboardEvent.code → accelerator 字符串 + ⌘⌥1 显示
+│           ├── virtual.ts           # 虚拟滚动的纯函数（前缀和 / 二分定位 / 锚点补偿），可脱 DOM 测
+│           └── virtual.test.ts      # `npm test`（node --test 直接跑 TS，见 §11 第 9 条）
 ├── build/                           # 构建资产（Wails 平台任务 / 图标 / 安装脚本）
 │   ├── deskflow/
 │   │   └── fetch.sh                 # 下载+校验+裁剪 Deskflow 运行时（产物 build/deskflow/<os>/<arch>/ 被 gitignore）
@@ -820,12 +823,13 @@ flowchart LR
 | ADR-014 | 共享状态存**独立的 `link.json`**，不塞进 `config.json` | 设备 ID / 配对记录都是运维态：丢了只是重新配一次，不需要事务性。塞进 `config.json` 就得升 `version` 触发迁移，代价与收益不成比例；独立文件还让 `LinkStore.Load` 可以在损坏时静默回落空快照 | 并入 `config.json`（为一个可丢字段引入配置迁移） |
 | ADR-015 | Deskflow 运行时**随应用内置**（构建期下载+校验+裁剪，二进制不进仓库），而不是要求用户自己安装 | 用户为了共享键鼠先去 GitHub 装一个 Deskflow 再回来点按钮，等于把集成做废；而 57MB(macOS)/38MB(Windows) 的二进制提交进 git 会让仓库不可维护，`go:embed` 又会让每次启动都映射这堆动态库。放 `build/deskflow/<os>/<arch>/`（gitignored）+ 打包期拷进产物，兼顾自包含与仓库轻量 | 要求用户自装（体验断裂）；提交二进制（仓库膨胀）；`go:embed`（启动成本 + 仍需在源码树里放二进制） |
 | ADR-016 | 日志改用**进程内总线**（slog `Tee` 双写到终端与环形缓冲）+ 前端游标增量拉取，而不是把 `slog` 输出改成文件再由前端读文件 | 双击打开的 `.app`/`.exe` 没有终端，共享键鼠的问题几乎全在 `deskflow-core` 的 stderr 里；让前端读日志文件需要额外处理编码（Windows 上不是 UTF-8 就乱码）、滚动、以及「用户还没打开就错过了」的时序问题。总线还能把 Wails 自己的系统消息一起收进来 | 前端直接读 `app.log`（编码/滚动/时序全要自己解）；只写文件让用户去找（违背「让用户少操作」） |
+| ADR-017 | 日志列表用**自建虚拟滚动组件**（`components/VirtualList.vue` + `lib/virtual.ts` 纯函数），不引 `vue-virtual-scroller` 之类的库 | 缓冲上限 2000 条、每行还会折行，全量挂 DOM 后每次增量都要重排整棵列表，滚动明显掉帧；而这里需要的只是「纵向 + 行高不一 + 只渲染视口」一件事（一次前缀和 + 一次二分 + 两个 ResizeObserver）。自己写把算法抽成纯函数进 `lib/virtual.ts`，可以用 `node --test` 直接测（引库则只能靠真机看）。行高按**条目对象**记在 `WeakMap` 里，因为条目被裁剪/筛选后下标会变、对象不会 | 引入虚拟列表依赖（多一份体积与打包风险，且行高实测/锚点行为仍要自己调）；只做「分页显示」（用户翻不到相邻上下文） |
 
 ---
 
 ## 11. 测试策略
 
-只写后端 Go 测试（前端不写单测，靠真机验收）。分层策略如下：
+后端 Go 测试覆盖全部业务分支；前端只测**纯函数**（不测组件、不引 jsdom），其余靠真机验收。分层策略如下：
 
 | 层 | 测什么 | 怎么测 | 依赖 |
 |---|---|---|---|
@@ -846,6 +850,7 @@ flowchart LR
 | `infrastructure/logging` | Seq 单调、增量 Since、环形淘汰与 Dropped、级别解析、`Tee` 双写、200ms 合批、文件滚动 | `t.TempDir()` 真文件 + 假 events | 无 |
 | `application/logapp` | 游标查询、limit 截断、Lost 判定、空/nil 缓冲 | fake `LogBuffer` | 无 |
 | `bootstrap` | 装配完整性、失败快速返回 | `wails.New` 但不 `Run` | 无 |
+| 前端 `lib/*.ts` | 虚拟滚动的区间计算、前缀和、锚点补偿 | `node --test`（Node 直接剥类型跑 TS，`npm test`） | 无 DOM |
 
 约定：
 
@@ -856,9 +861,10 @@ flowchart LR
 5. 真机集成测试（会真的切屏幕）单独打 tag：`go test ./internal/bootstrap/ -tags manual -run TestSwitchToCurrentPort -v`。
 6. **打包产物里的内置运行时靠 `bundledCoreUnder(dir)` 单独测**：`bundledCore()` 依赖 `os.Executable()` 造不出真实 `.app`，所以定位逻辑拆成可传目录的版本，测试里手搭 `deskflow/` 与 `Resources/deskflow/Contents/MacOS/` 两种布局。
 7. **进程级单例（日志总线）的测试必须用游标而不是假设空缓冲**：`go test -count=2` 时上一条用例写进去的日志还在，`Query(0, 10)` 会拿到多条。
-8. **需要外部二进制的测试只用 tag + 环境变量开启，默认 skip**：`DESKFLOW_CORE=<path> go test -tags deskflow_real ./internal/application/linkapp/ -run TestRealCorePair -v`。不要在测试里写死 `/Applications/...` 路径，否则 CI 上必然失败。
+8. **前端只测纯函数，且用 Node 自带的 `node --test`**：组件渲染、ResizeObserver、滚动这些交给真机验收；能脱 DOM 算的都挪进 `lib/*.ts` 再测。测试文件 import 必须写 `.ts` 后缀（所以 `tsconfig.json` 开了 `allowImportingTsExtensions`），命令是 `npm test`（`node --test "src/**/*.test.ts"`，**不能省略 glob**，`node --test src/` 在 Node 22 上会报 `test failed`）。
+9. **需要外部二进制的测试只用 tag + 环境变量开启，默认 skip**：`DESKFLOW_CORE=<path> go test -tags deskflow_real ./internal/application/linkapp/ -run TestRealCorePair -v`。不要在测试里写死 `/Applications/...` 路径，否则 CI 上必然失败。
 
-跑法：`go test ./internal/... -cover`、`go vet ./internal/... .`、`gofmt -l internal/ main.go`。
+跑法：`go test ./internal/... -cover`、`go vet ./internal/... .`、`gofmt -l internal/ main.go`、`cd frontend && npm test`。
 
 ---
 
@@ -909,3 +915,4 @@ flowchart LR
 | 2026-10-27 | **Deskflow 运行时随应用内置**：`build/deskflow/fetch.sh` 按 `sums.txt` 校验 sha256 后从 v1.27.0 release 取运行时并裁剪（macOS 保留 `deskflow-core` + 5 个 Qt framework + `platforms/tls/networkinformation` 插件 + `qt.conf`；Windows 保留 `deskflow-core.exe` + DLL + `plugins/`），产物 `build/deskflow/<os>/<arch>/` 由 `.gitignore` 忽略、不进仓库；`common:deskflow:bundle` 任务做入口，darwin 打包在 `codesign` **之前**拷进 `<App>.app/Contents/Resources/deskflow/`（dev 包同样拷，否则内置路径永远验证不到），Windows 由 NSIS 用 `ARG_WAILS_DESKFLOW_DIR` 装进 `$INSTDIR\deskflow`；`deskflow.Locate()` 新增 `bundledCoreUnder()`，内置路径优先于系统安装版。理由：用户不该为了共享键鼠先去装 Deskflow，而 57MB/38MB 的二进制既不能进 git 也不适合 `go:embed`（每次启动都要映射）。见 [deskflow-integration.md](./deskflow-integration.md) §11 | 构建 + infrastructure/link/deskflow + docs |
 | 2026-10-27 | **Windows 托盘两处修复**：① 右键菜单不弹出 —— 资源管理器在 NOTIFYICON_VERSION_4 下会把 `WM_CONTEXTMENU` 当普通窗口消息直接投给托盘窗口，Wails beta.34 的 `systemtray_windows.go` 只在 `wmUserSystray` 分支处理它，直接投递的那条落到 `DefWindowProc`（左键正常、右键无反应）。`tray/uipi_windows.go` 的 `WndProcInterceptor` 挂在 `WindowsOptions.WndProcInterceptor` 上补住这条，只对父窗口为 `HWND_MESSAGE` 的消息窗口生效；同时 `start` 里显式 `OnRightClick(OpenMenu)`，并用 `ChangeWindowMessageFilter(Ex)` 放行 `WM_USER+1`（提权进程收不到非提权 explorer 的回调）。② 托盘语言不跟随系统 —— `isChinese` 原来只看 `LC_ALL`/`LC_MESSAGES`/`LANG`，Windows 不设这些变量所以永远英文；改为「显式语言 > locale 变量（`C`/`POSIX` 哨兵忽略）> 系统 UI 语言」，系统语言在 `lang_windows.go` 用 `GetUserDefaultUILanguage` 取主语言 ID | presentation/tray + main.go + docs |
 | 2026-10-28 | **第四步：日志页**。新增 `infrastructure/logging`（环形 2000 条总线 + slog handler + `Tee` 双写 + `Raw` 承接子进程原文 + 2MiB 文件滚动）、`application/logapp`（游标增量查询 / Lost 判定 / 来源汇总）、`presentation/wailsservice/logservice.go`（`LogService`，4 个方法）、`application/dto/log.go`；新增 `EventLogAppended`（200ms 合批）；新增端口 `LogBuffer` / `LogSink` 与 `application.LogEntry`；`deskflow.Runtime` 增加 `SetSink`（原始输出旁路到总线，锁外回调避免拖住 `Status()`/`Stop()`）；**日志总线改为进程级单例并在 `wails.New` 之前注入 `wails.Options.Logger`**，使 WebView2/资源服务器等 Wails 系统消息也进日志页；前端 `/logs` 页 + `stores/log.ts` + 侧栏 `ScrollText` 入口 + 中英文案；core 状态说明补充 `exit_other` / `server_not_listening` 两个稳定标识（原来把中文写进后端）。§3 目录树、§4 状态列、§5 契约（`LogBuffer`/`LogSink`/`LogEntry`）、§7.5 日志上行图、§10 ADR-016、§11 测试表与第 7 条约定同步 | 全部层 + docs |
+| 2026-10-28 | **日志页虚拟滚动**。新增 `frontend/src/components/VirtualList.vue`（泛型组件：前缀和 + 二分定位 + `ResizeObserver` 实测行高 + 滚动锚点补偿 + `scrollToBottom`/`isAtBottom` 暴露）与 `frontend/src/lib/virtual.ts`（`buildEdges`/`findRange`/`topIndex`/`anchoredScrollTop` 纯函数）；`LogsView.vue` 改用它，**DOM 里固定只挂约 20 行而不是 2000 行**；`stores/log.ts` 的 `entries` 改 `shallowRef`（日志条目写入即不变，深层响应式只会为每条造 Proxy）；新增 `frontend/src/lib/virtual.test.ts`（11 用例）+ `npm test`（`node --test "src/**/*.test.ts"`，`tsconfig.json` 开 `allowImportingTsExtensions`）。新增 ADR-017；§3 目录树、§11 测试表与第 8 条约定同步 | 前端 + docs |

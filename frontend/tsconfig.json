@@ -14,6 +14,9 @@
     "lib": ["ESNext", "DOM"],
     "skipLibCheck": true,
     "noEmit": true,
+    // 测试文件用 `node --test` 直接跑 TS（Node 会剥类型），
+    // 而 Node 要求 import 写完整扩展名，所以这里必须放开 .ts 后缀。
+    "allowImportingTsExtensions": true,
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],

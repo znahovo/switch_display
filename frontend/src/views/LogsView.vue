@@ -11,10 +11,11 @@
 // 2) 级别/来源是「标签式」筛选而不是下拉：排障时反复切换，
 //    下拉要点两次，标签只要一次。
 // 3) 复制按钮直接给整段纯文本，用户粘到 issue 里就能用。
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue"
+import { computed, onMounted, onUnmounted, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
 import { ArrowDownToLine, Check, Copy, Eraser, Pause, Play, RefreshCw, ScrollText } from "lucide-vue-next"
 import PageShell from "@/components/PageShell.vue"
+import VirtualList from "@/components/VirtualList.vue"
 import Badge from "@/components/ui/Badge.vue"
 import Button from "@/components/ui/Button.vue"
 import Card from "@/components/ui/Card.vue"
@@ -25,7 +26,9 @@ import { useLogStore } from "@/stores/log"
 const { t } = useI18n()
 const store = useLogStore()
 
-const scroller = ref<HTMLElement | null>(null)
+/** 虚拟列表对外只暴露两个动作；泛型组件没有可用的 InstanceType，手写更快也更清楚。 */
+type ListHandle = { scrollToBottom: () => void; isAtBottom: () => boolean }
+const list = ref<ListHandle | null>(null)
 const copied = ref(false)
 /** 暂停后不再自动拉取：用户想静止看某一段时用。 */
 const paused = ref(false)
@@ -49,23 +52,30 @@ onMounted(async () => {
 
 onUnmounted(() => off?.())
 
-/** 跟随：新内容进来自动滚到底。 */
+/**
+ * 跟随：有新内容就滚到底。
+ *
+ * 只订阅「可见条数」而不是整条数组：内容没变时后端仍会每 200ms 发一次事件，
+ * 每次都滚一下会让用户手动翻看历史时被反复拽回去。
+ */
 watch(
   () => store.visible.length,
-  async () => {
-    if (!store.follow) return
-    await nextTick()
-    const el = scroller.value
-    if (el) el.scrollTop = el.scrollHeight
+  () => {
+    if (store.follow && !paused.value) list.value?.scrollToBottom()
   },
+  // post：等新行进了 DOM 再滚，否则拿到的是旧的 scrollHeight，
+  // 只会停在上一批的最后一行的位置。
+  { flush: "post" },
 )
 
-/** 用户手动往上滚就取消跟随——正在读报错时被拽到底部最烦人。 */
-function onScroll() {
-  const el = scroller.value
-  if (!el) return
-  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+/** 列表回报是否贴底：贴着就继续跟随，手动往上滚就停。 */
+function onAtBottom(atBottom: boolean) {
   store.follow = atBottom
+}
+
+function scrollToBottom() {
+  store.follow = true
+  list.value?.scrollToBottom()
 }
 
 async function copyAll() {
@@ -73,13 +83,6 @@ async function copyAll() {
     copied.value = true
     setTimeout(() => (copied.value = false), 1600)
   }
-}
-
-async function scrollToBottom() {
-  store.follow = true
-  await nextTick()
-  const el = scroller.value
-  if (el) el.scrollTop = el.scrollHeight
 }
 
 /** 每行的时间只留 HH:MM:SS.mmm：日期在同一份日志里几乎总是一样的。 */
@@ -176,42 +179,38 @@ function levelTone(level: string): string {
       </div>
     </Card>
 
-    <!-- 日志正文 -->
+    <!-- 日志正文：虚拟滚动，DOM 里只有视口那几十行 -->
     <Card class="overflow-hidden p-0">
-      <div
-        ref="scroller"
-        class="h-[min(58vh,520px)] overflow-auto font-mono text-[11.5px] leading-[1.55]"
-        @scroll.passive="onScroll"
-      >
-        <div v-if="!store.visible.length" class="flex flex-col items-center gap-2 px-6 py-16 text-center">
-          <ScrollText class="size-5 text-muted-foreground" />
-          <p class="font-sans text-[13px] text-muted-foreground">{{ t("logs.empty") }}</p>
-          <p class="font-sans text-[11px] text-muted-foreground/75">{{ t("logs.emptyHint") }}</p>
-        </div>
-
-        <table v-else class="w-full border-collapse">
-          <tbody>
-            <tr
-              v-for="e in store.visible"
-              :key="e.seq"
-              class="border-b border-border/40 last:border-0 hover:bg-accent/40"
-            >
-              <td class="w-[86px] whitespace-nowrap px-3 py-0.5 align-top text-muted-foreground/80">
-                {{ shortTime(e.time) }}
-              </td>
-              <td class="w-[54px] whitespace-nowrap px-1 py-0.5 align-top font-semibold" :class="levelTone(e.level)">
-                {{ levelLabel(e.level) }}
-              </td>
-              <td class="w-[76px] truncate px-1 py-0.5 align-top text-muted-foreground" :title="e.source">
-                {{ e.source }}
-              </td>
-              <td class="whitespace-pre-wrap break-words px-3 py-0.5 align-top">
-                {{ e.message }}<span v-if="e.fields" class="text-muted-foreground"> {{ e.fields }}</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+      <div v-if="!store.visible.length" class="flex flex-col items-center gap-2 px-6 py-16 text-center">
+        <ScrollText class="size-5 text-muted-foreground" />
+        <p class="font-sans text-[13px] text-muted-foreground">{{ t("logs.empty") }}</p>
+        <p class="font-sans text-[11px] text-muted-foreground/75">{{ t("logs.emptyHint") }}</p>
       </div>
+
+      <VirtualList
+        v-else
+        ref="list"
+        :items="store.visible"
+        :key-of="(e) => e.seq"
+        :estimate="25"
+        class="h-[min(58vh,520px)] font-mono text-[11.5px] leading-[1.55]"
+        @at-bottom="onAtBottom"
+      >
+        <template #default="{ item: e }">
+          <div class="flex items-start gap-2 border-b border-border/40 px-3 py-[3px] hover:bg-accent/40">
+            <span class="w-[86px] shrink-0 text-muted-foreground/80">{{ shortTime(e.time) }}</span>
+            <span class="w-[44px] shrink-0 font-semibold" :class="levelTone(e.level)">
+              {{ levelLabel(e.level) }}
+            </span>
+            <span class="w-[76px] shrink-0 truncate text-muted-foreground" :title="e.source">
+              {{ e.source }}
+            </span>
+            <span class="min-w-0 flex-1 whitespace-pre-wrap break-words">
+              {{ e.message }}<span v-if="e.fields" class="text-muted-foreground"> {{ e.fields }}</span>
+            </span>
+          </div>
+        </template>
+      </VirtualList>
     </Card>
 
     <!-- 状态脚注 -->

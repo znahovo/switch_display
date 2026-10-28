@@ -5,7 +5,7 @@
 // 每 200ms 全量搬一次 JSON 会让界面在执行「滚动到底部」和「重渲染」之间
 // 反复抖动。这里只追加新增的部分，并用 seq 作为 key 做稳定渲染。
 import { defineStore } from "pinia"
-import { computed, ref } from "vue"
+import { computed, ref, shallowRef } from "vue"
 import { logApi, type LogBatch, type LogEntryDTO } from "@/api"
 
 /** 一次拉取的条数上限（与后端 logapp.MaxLimit 一致）。 */
@@ -15,8 +15,15 @@ const PAGE_SIZE = 2000
 const MAX_KEEP = 4000
 
 export const useLogStore = defineStore("log", () => {
-  /** 全部日志（按 seq 升序）。 */
-  const entries = ref<LogEntryDTO[]>([])
+  /**
+   * 全部日志（按 seq 升序）。
+   *
+   * 用 shallowRef 而不是 ref：日志条目是「写入即不变」的数据，没有任何字段
+   * 会被原地改动，深层响应式在这里只有代价——几千条条目被遍历一次（筛选、
+   * 复制、渲染）就要为每条造一个 Proxy。列表本身的替换（整体赋值）仍然会
+   * 触发更新，这正是唯一需要响应的变化。
+   */
+  const entries = shallowRef<LogEntryDTO[]>([])
   /** 下次拉取的游标。 */
   const cursor = ref(0)
   const loading = ref(false)
