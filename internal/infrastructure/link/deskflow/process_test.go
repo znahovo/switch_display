@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -356,3 +357,65 @@ type nopTestLogger struct{}
 func (nopTestLogger) Debug(string, ...any)        {}
 func (nopTestLogger) Info(string, ...any)         {}
 func (nopTestLogger) Error(string, error, ...any) {}
+
+// captureSink 记录 core 的原始输出，模拟界面日志页。
+type captureSink struct {
+	mu    sync.Mutex
+	lines []string
+	src   []string
+}
+
+func (c *captureSink) Raw(source, line string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lines = append(c.lines, line)
+	c.src = append(c.src, source)
+}
+
+func (c *captureSink) snapshot() ([]string, []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string{}, c.lines...), append([]string{}, c.src...)
+}
+
+func TestRuntimeForwardsRawOutputToSink(t *testing.T) {
+	// 用户在没有终端的 .app/.exe 里排障，只能靠这些原文。
+	bin := fakeCore(t, `echo "[2026-01-01T00:00:00] INFO: started client"; echo "plain line"; sleep 30`)
+	rt := NewRuntime(bin, nopTestLogger{})
+	sink := &captureSink{}
+	rt.SetSink(sink)
+
+	if err := rt.Start(context.Background(), ModeClient, "/tmp/x.conf", 0); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
+
+	waitFor(t, 3*time.Second, func() bool {
+		lines, _ := sink.snapshot()
+		return len(lines) >= 2
+	}, "sink lines")
+
+	lines, sources := sink.snapshot()
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "started client") {
+		t.Errorf("lines = %q, want 'started client'", joined)
+	}
+	// 无法识别级别的行也必须原样透传——那往往就是崩溃现场。
+	if !strings.Contains(joined, "plain line") {
+		t.Errorf("raw line dropped: %q", joined)
+	}
+	for _, s := range sources {
+		if s != "deskflow" {
+			t.Errorf("source = %q, want deskflow", s)
+		}
+	}
+}
+
+func TestRuntimeSetSinkIsSafeWithoutStart(t *testing.T) {
+	// bootstrap 在构造后立刻注入；此时还没有进程。
+	rt := NewRuntime("/nonexistent", nopTestLogger{})
+	rt.SetSink(&captureSink{})
+	if s := rt.Status(); s.State != StateStopped {
+		t.Errorf("state = %q", s.State)
+	}
+}

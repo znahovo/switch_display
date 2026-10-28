@@ -5,6 +5,8 @@
 package application
 
 import (
+	"time"
+
 	"github.com/znahovo/switch-display/internal/domain/switching"
 )
 
@@ -55,4 +57,57 @@ const (
 	// EventLinkChanged 在共享状态、对端列表或 core 状态变化时发出，
 	// payload 为 nil（前端收到后重新拉 LinkService.State）。
 	EventLinkChanged = "link:changed"
+	// EventLogAppended 在有新日志时发出，payload 为 nil。
+	//
+	// 事件是合批的（见 infrastructure/logging.NotifyInterval），
+	// 前端收到后按游标增量拉，而不是整表重取。
+	EventLogAppended = "log:appended"
 )
+
+// LogEntry 是一条已落地的日志。
+//
+// 放在 application 而不是 infrastructure：用例层要按游标把它读出来给前端，
+// 而用例层不许 import 基础设施包（R2），只能反过来。
+type LogEntry struct {
+	// Seq 是单调递增序号，前端按它做增量拉取。
+	Seq uint64
+	// Time 是写入时间。
+	Time time.Time
+	// Level 是 debug/info/warn/error/raw。
+	Level string
+	// Source 标识来源（app/deskflow/wails…）。
+	Source string
+	// Message 是日志正文。
+	Message string
+	// Fields 是 kv 的渲染结果，形如 `pid=123 mode=server`。
+	Fields string
+}
+
+// LogBuffer 是日志环形缓冲端口。
+type LogBuffer interface {
+	// Since 返回序号大于 after 的条目（最多 limit 条）。
+	Since(after uint64, limit int) []LogEntry
+	// Latest 返回当前最大序号。
+	Latest() uint64
+	// Oldest 返回缓冲里还剩的最小序号（空时返回 0）。
+	Oldest() uint64
+	// Dropped 返回因容量被丢弃的条数。
+	Dropped() int
+	// Capacity 返回缓冲容量。
+	Capacity() int
+	// FilePath 返回落盘路径（空表示不落盘）。
+	FilePath() string
+	// FileError 返回落盘错误说明（空表示正常）。
+	FileError() string
+	// Clear 清空内存缓冲。
+	Clear()
+}
+
+// LogSink 是外部进程原始输出的落地端口。
+//
+// 定义在这里而不是 logging 包：deskflow 只知道「有一行原始输出要交代出去」，
+// 不该知道它最终进了环形缓冲还是文件（R8）。
+type LogSink interface {
+	// Raw 记录一行原始输出。source 用于区分来源（如 "deskflow"）。
+	Raw(source, line string)
+}

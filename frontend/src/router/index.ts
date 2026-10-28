@@ -1,4 +1,4 @@
-// 极简路由：四个页面，全部走 hash。
+// 极简路由：五个页面，全部走 hash。
 //
 // 用 hash 而不是 history：Wails 用自定义 scheme 提供资源，history 模式下
 // 刷新会打到 asset server 上拿不到 index.html（ADR-006）。
@@ -16,6 +16,11 @@ export const routes = [
     path: "/share",
     name: "share",
     component: () => import("@/views/ShareView.vue"),
+  },
+  {
+    path: "/logs",
+    name: "logs",
+    component: () => import("@/views/LogsView.vue"),
   },
   {
     path: "/settings",

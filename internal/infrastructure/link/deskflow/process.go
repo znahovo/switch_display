@@ -35,6 +35,10 @@ const (
 	MsgExitConfig = "exit_config"
 	// MsgExitDuplicate 对应 s_exitDuplicate（5）：已有另一个 core。
 	MsgExitDuplicate = "exit_duplicate"
+	// MsgExitOther 表示 core 以其它非零码退出，或根本没起来。
+	MsgExitOther = "exit_other"
+	// MsgServerNotListening 表示 server 进程活着但端口没起来。
+	MsgServerNotListening = "server_not_listening"
 )
 
 // ErrBusy 表示已经有 core 在跑（或正在停止）。
@@ -74,6 +78,9 @@ type Status = link.RuntimeStatus
 type Runtime struct {
 	binary string
 	log    Logger
+	// sink 接收 core 的原始输出（界面日志页要能看到子进程原话）。
+	// nil 表示只留在内存尾巴里。
+	sink Sink
 
 	mu      sync.Mutex
 	cmd     *exec.Cmd
@@ -91,6 +98,17 @@ type Logger interface {
 	Error(msg string, err error, kv ...any)
 }
 
+// Sink 接收 core 的原始输出行。
+//
+// 单独一个端口而不是复用 Logger：Logger 是结构化的（会补前缀、加 kv），
+// 而用户排障时需要的是 Deskflow 原话，多一个字都不能改。
+type Sink interface {
+	Raw(source, line string)
+}
+
+// sourceName 是这些日志在界面上的来源标签。
+const sourceName = "deskflow"
+
 // NewRuntime 构造 Runtime。binary 必须是可执行文件的绝对路径。
 func NewRuntime(binary string, log Logger) *Runtime {
 	return &Runtime{
@@ -98,6 +116,15 @@ func NewRuntime(binary string, log Logger) *Runtime {
 		log:    log,
 		status: Status{State: StateStopped, Role: link.RoleIdle},
 	}
+}
+
+// SetSink 注入原始输出接收方（bootstrap 在构造后调用）。
+//
+// 加锁是必须的：Start 之后 pump 协程已经在读 r.sink 了。
+func (r *Runtime) SetSink(s Sink) {
+	r.mu.Lock()
+	r.sink = s
+	r.mu.Unlock()
 }
 
 // Status 返回当前状态快照。
@@ -211,10 +238,12 @@ func (r *Runtime) probeServerReady(port int) {
 		time.Sleep(readyProbeInterval)
 	}
 	// 端口没起来：进程还活着但没在监听，可能是端口被占用或在等配置。
+	// 具体端口进日志（排障要看），界面上的说明用稳定标识由前端翻译。
+	r.log.Error("deskflow server did not listen", fmt.Errorf("probe timeout"), "port", port)
 	r.mu.Lock()
 	if r.status.State == StateStarting {
 		r.status.State = StateFailed
-		r.status.Message = fmt.Sprintf("server 未在端口 %d 监听", port)
+		r.status.Message = MsgServerNotListening
 	}
 	r.mu.Unlock()
 }
@@ -234,19 +263,29 @@ func (r *Runtime) pump(rd io.Reader) {
 }
 
 // appendLog 把一行输出放进环形缓冲，并更新状态。
+//
+// 外部回调（sink.Raw）一律在锁外调用：它可能落盘、可能触发广播，
+// 让这些事占着 r.mu 会把 Status()/Stop() 一起拖住。
 func (r *Runtime) appendLog(line string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	r.logTail = append(r.logTail, line)
 	if len(r.logTail) > maxLogLines {
 		r.logTail = r.logTail[len(r.logTail)-maxLogLines:]
+	}
+	sink := r.sink
+	r.mu.Unlock()
+
+	if sink != nil {
+		sink.Raw(sourceName, line)
 	}
 
 	ev, ok := logEventFor(line)
 	if !ok {
 		return
 	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if ev.Message != "" {
 		r.status.Message = ev.Message
 	}
@@ -379,13 +418,15 @@ func exitMessage(err error) string {
 		case 5:
 			return MsgExitDuplicate
 		default:
-			return fmt.Sprintf("Deskflow core exited with code %d", ee.ExitCode())
+			return MsgExitOther
 		}
 	}
 	if errors.Is(err, context.Canceled) {
 		return ""
 	}
-	return fmt.Sprintf("Deskflow core 退出：%v", err)
+	// 起不来（例如权限不足、路径不存在）时 err 本身没地方放，
+	// 但日志页里已经有 deskflow 的原始输出，用户看得见原因。
+	return MsgExitOther
 }
 
 // Stop 停止 core。多次调用是安全的。

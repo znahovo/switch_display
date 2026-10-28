@@ -7,6 +7,8 @@ export type {
     InputDTO,
     LinkSelfDTO,
     LinkStateDTO,
+    LogBatchDTO,
+    LogEntryDTO,
     PairResultDTO,
     PeerDTO,
     PresetDTO,

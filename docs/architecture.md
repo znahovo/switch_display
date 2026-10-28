@@ -119,7 +119,7 @@ switch_display/
 ├── main.go                          # 装配根：建 Wails 应用、装 bootstrap、注册服务、app.Run()
 ├── internal/
 │   ├── bootstrap/
-│   │   ├── bootstrap.go             # Build(wailsApp) *App / (*App).Start(ctx) / AttachWindow
+│   │   ├── bootstrap.go             # Build(wailsApp) *App / (*App).Start(ctx) / AttachWindow + 进程级日志总线单例（SystemLogger/SystemBus）
 │   │   └── bootstrap_test.go        # 装配完整性 + 取消的 context 快速失败
 │   │   （e2e_manual_test.go 带 //go:build manual，真机跑一次真实切换）
 │   │
@@ -155,9 +155,13 @@ switch_display/
 │   │   │   ├── ports.go             # Transport / Core 两个端口（发现 + Deskflow 进程）
 │   │   │   ├── service.go           # 编排：发现 → 配对握手 → 启停 core → 状态汇总
 │   │   │   └── service_test.go      # fake Transport/Core/Repo：配对、拒绝、停止、解绑
+│   │   ├── logapp/
+│   │   │   ├── service.go           # Query(after,limit)：游标增量 + Lost 判定 + Sources
+│   │   │   └── service_test.go      # fakeBuffer：游标、截断、空缓冲、nil 安全
 │   │   └── dto/
 │   │       ├── dto.go               # 面向前端的扁平 DTO
 │   │       ├── link.go              # LinkStateDTO / PeerDTO / TrustedPeerDTO / CoreStatusDTO …
+│   │       ├── log.go               # LogEntryDTO / LogBatchDTO
 │   │       ├── convert.go           # 领域 ↔ DTO 双向映射
 │   │       └── convert_test.go
 │   │
@@ -203,11 +207,15 @@ switch_display/
 │   │   │   ├── jsonstore.go         # source.Repository 实现：原子写 + .bak + fsync + 导入导出
 │   │   │   ├── migrate.go           # 配置版本迁移 + 默认值补齐
 │   │   │   ├── paths.go             # os.UserConfigDir()/switch-display/config.json
-│   │   │   ├── linkpaths.go         # 同目录下的 link.json 与 deskflow/
+│   │   │   ├── linkpaths.go         # 同目录下的 link.json、deskflow/、app.log
 │   │   │   ├── linkstore.go         # link.Repository 实现（损坏一律回落空快照）
 │   │   │   ├── jsonstore_test.go    # 往返/备份/坏文件/导入导出
 │   │   │   ├── linkstore_test.go    # 往返/缺失/损坏回落/.bak
 │   │   │   └── migrate_test.go      # 版本迁移 + 默认值 + context 取消
+│   │   ├── logging/                 # 进程内日志总线（界面「日志」页的来源）
+│   │   │   ├── bus.go               # 环形缓冲 + slog handler + Tee + 200ms 合批事件 + Raw（Sink）
+│   │   │   ├── file.go              # app.log 追加写 + 2MiB 滚动（.1）
+│   │   │   └── bus_test.go          # Seq/增量/淘汰/级别解析/双写/滚动
 │   │   └── platform/                # 端口 → Wails/系统 的薄转发
 │   │       ├── events.go            # EventPublisher → Wails app.Event.Emit
 │   │       ├── hotkey.go            # HotkeyRegistrar → Wails GlobalShortcut
@@ -221,6 +229,7 @@ switch_display/
 │   │   ├── wailsservice/
 │   │   │   ├── service.go           # DisplayService：薄适配，只做 DTO 映射与启动钩子
 │   │   │   ├── linkservice.go       # LinkService：共享页的薄适配（同样只映射 DTO）
+│   │   │   ├── logservice.go        # LogService：日志页的薄适配（无 Start/Shutdown 钩子）
 │   │   │   ├── errors.go            # 领域错误 → 稳定 error code（前端 i18n 用）
 │   │   │   ├── service_test.go      # 端到端接线（fake Port + 临时配置目录）
 │   │   │   ├── service_extra_test.go# 警告一次性消费 / 导入导出 / 错误映射
@@ -249,12 +258,14 @@ switch_display/
 │       ├── api/index.ts             # 包一层 bindings：组件不直接调 $Call
 │       ├── stores/app.ts            # Pinia：显示器 + 信号源 + 设置（单一 store）
 │       ├── stores/link.ts           # Pinia：共享状态（发现到的对端 / core 状态 / 配对动作）
-│       ├── router/index.ts          # hash 路由：/ /sources /share /settings（ADR-006）
+│       ├── stores/log.ts            # Pinia：日志环形缓冲的增量镜像 + 级别/来源筛选
+│       ├── router/index.ts          # hash 路由：/ /sources /share /logs /settings（ADR-006）
 │       ├── App.vue                  # 左侧可折叠导航栏（宽度持久化到 localStorage）+ RouterView
 │       ├── views/
 │       │   ├── SwitcherView.vue     # 切换台：点卡片即切
 │       │   ├── SourcesView.vue      # 信号源增删改 + 快捷键录制（整体提交）
 │       │   ├── ShareView.vue        # 共享键鼠：自发现对端 → 选主机 → 配对 → core 状态
+│       │   ├── LogsView.vue         # 日志：级别/来源筛选、跟随最新、复制全部、清空
 │       │   └── SettingsView.vue     # 语言 / 关窗隐藏 / 读回确认 / 本机源 / 导入导出
 │       ├── components/
 │       │   ├── PageShell.vue         # 页面骨架：标题 + 说明 + 右上操作区（三页统一起点）
@@ -307,7 +318,9 @@ switch_display/
 | `application/linkapp` | 编排「发现 → 配对握手 → 写信任库/布局 → 启停 core」，聚合成一个状态 DTO | 不含密钥/证书的字节级细节（在 infrastructure）；不直接收发 UDP | ✅ 第三步 |
 | `infrastructure/link/discovery` | UDP 广播、单播信令收发、对端表与 TTL 过期 | 不理解配对语义（回调给用例层） | ✅ 第三步 |
 | `infrastructure/link/deskflow` | 定位 `deskflow-core`、自签证书与指纹、写 INI/布局/信任库、子进程生命周期与日志 | 不决定「谁是主机」（用例层决定） | ✅ 第三步 |
-| `presentation/wailsservice` | 暴露给前端的 API、DTO 映射、错误 code | 不含流程控制 | ✅ 第一步（第三步加 `LinkService`） |
+| `infrastructure/logging` | 进程内日志总线：环形缓冲（2000 条）、slog handler、`Tee` 双写、2MiB 文件滚动、`Raw` 承接外部进程原文 | 不决定日志说什么、不做级别策略（级别只用于展示与筛选） | ✅ 第四步 |
+| `application/logapp` | 按游标做增量查询、判定「中间有日志被挤掉」、汇总来源列表 | 不持有缓冲（端口注入）、不做渲染 | ✅ 第四步 |
+| `presentation/wailsservice` | 暴露给前端的 API、DTO 映射、错误 code | 不含流程控制 | ✅ 第一步（第三步加 `LinkService`，第四步加 `LogService`） |
 | `presentation/tray` | 菜单结构、图标、当前源打勾、点击转发、关窗隐藏 | 不直接调 ddc | ✅ 第二步 / Windows 图标与文案已适配 |
 | `bootstrap` | 装配、生命周期、热插拔轮询、关窗拦截接线 | 不写业务分支 | ✅ 第二步 |
 | `build/`（非 Go 层） | 打包：`.app` / `.exe` / NSIS 安装包，以及把 Deskflow 运行时内置进产物 | 不含运行期逻辑；运行期只由 `deskflow/locate.go` 反向读取布局 | ✅ 第三步 |
@@ -377,6 +390,7 @@ const (
     EventOpenSettings   = "dialogs:open-settings"  // 托盘「设置…」→ 前端跳设置页
     EventShowView       = "ui:show-view"           // payload: 目标路由路径
     EventLinkChanged    = "link:changed"           // 共享状态/对端表/core 状态变了
+    EventLogAppended    = "log:appended"           // 有新日志（后端按 200ms 合批，payload 为 nil）
 )
 
 // ── internal/domain/link/settings.go ─────────────────────────────
@@ -413,7 +427,41 @@ type Core interface {
     Status() link.RuntimeStatus
     LogTail() []string
 }
+
+// ── 日志（internal/application/port.go）──────────────────────────
+type LogEntry struct {
+    Seq     uint64
+    Time    time.Time
+    Level   string // debug / info / warn / error / raw
+    Source  string // app / deskflow
+    Message string
+    Fields  string // 结构化字段已渲染成 "k=v" 串
+}
+
+// LogBuffer 是日志页的读端口（infrastructure/logging.Bus 实现）。
+type LogBuffer interface {
+    Since(after uint64, limit int) []LogEntry // 超 limit 时取最新的一段
+    Latest() uint64
+    Oldest() uint64 // 空缓冲为 0；用于判断游标是否已越过存活范围
+    Dropped() int
+    Capacity() int
+    FilePath() string // 空表示只在内存里
+    FileError() string
+    Clear()
+}
+
+// LogSink 承接外部进程的原始输出（deskflow-core 的 stdout/stderr）。
+//
+// 与 Logger 分开：Logger 是结构化的、会补键值；排障要的是对端的原话，
+// 一个字节都不能改。
+type LogSink interface{ Raw(source, line string) }
 ```
+
+> **为什么要一个独立的总线**：打包后的应用是双击打开的，没有终端；而共享键鼠
+> 依赖外部进程 `deskflow-core`，它的问题只体现在自己的 stdout/stderr 里。
+> 因此 slog 在 `main.go` 里就被换成「终端 + 总线」双写（`logging.Tee`），
+> 并在 `wails.New` **之前**交给 Wails —— Wails 在构造时固定 logger，
+> 之后再改 `slog.SetDefault` 对它的系统消息无效。
 
 **`link.json`（磁盘格式，与 `config.json` 平级、独立文件）**：
 
@@ -590,13 +638,16 @@ sequenceDiagram
 
 ```mermaid
 flowchart TB
-    M["main.go"] --> B["bootstrap.New()"]
+    M["main.go"] --> LG["bootstrap.SystemLogger()<br/>日志总线单例（wails.New 之前）"]
+    LG --> WN["wails.New(Logger: …)<br/>系统消息也进日志页"]
+    M --> B["bootstrap.Build(app)"]
 
     subgraph L1["① 先建基础设施"]
         direction LR
         S["persistence.NewJSONStore()<br/>路径解析 · 首次运行写默认配置"]
         P["ddc.New()<br/>darwin: cgo · windows: Dxva2 · linux: stub"]
-        X["platform/{hotkey,events,paths}"]
+        X["platform/{logger,hotkey,events,clock}"]
+        DF["deskflow.NewEngine()<br/>+ discovery.New()"]
     end
     B --> L1
 
@@ -605,6 +656,8 @@ flowchart TB
         CA["configapp.New(store, hotkey, events)"]
         DA["displayapp.New(port)"]
         SA["switchapp.New(port, store, events)"]
+        LA["linkapp.New(transport, core, repo, events)"]
+        OA["logapp.New(buffer)"]
     end
     S --> CA
     P --> DA
@@ -612,16 +665,20 @@ flowchart TB
     S --> SA
     X --> CA
     X --> SA
+    DF --> LA
+    LG --> OA
 
     subgraph L3["③ 最后建表现层并启动"]
         direction LR
-        W["wailsservice.New(...)<br/>注册到 Wails"]
+        W["wailsservice.New(...)<br/>DisplayService + LinkService + LogService"]
         T["tray.New(...)"]
         R["app.Run()"]
     end
     CA --> W
     DA --> W
     SA --> W
+    LA --> W
+    OA --> W
     P --> T
     SA --> T
     W --> R
@@ -672,6 +729,45 @@ sequenceDiagram
 3. **布局里出现的每个名字都要在 `deskflow.conf` 里有 `[computer_<name>] name=<name>`**，否则 `unknown computer name` → core 以退出码 4 结束。
 4. **信任库不能是空文件**：Deskflow 对「文件存在但 0 条指纹」直接 `LOG_ERR` 拒绝连接，所以为空时要删文件。
 
+### 7.5 日志上行（一条日志怎么走到界面）
+
+> 这张图回答：为什么打包后的应用里没有终端，用户仍能看到 `deskflow-core` 的原话。
+
+```mermaid
+flowchart LR
+    subgraph P["进程内"]
+        direction TB
+        A["app 自己的 slog 调用"]
+        W["Wails 系统消息<br/>(WebView2 / 资源服务器)"]
+        D["deskflow-core 子进程<br/>stdout + stderr"]
+        B["logging.Bus<br/>环形 2000 条 + Seq"]
+        F["FileWriter<br/>app.log（2MiB 滚动）"]
+        T["终端 TextHandler<br/>(dev 时可见)"]
+        E["Emit log:appended<br/>(200ms 合批)"]
+    end
+    subgraph UI["前端"]
+        direction TB
+        S["stores/log.ts<br/>游标增量镜像"]
+        V["LogsView.vue<br/>筛选 / 跟随 / 复制"]
+    end
+
+    A --> B
+    W --> B
+    D -->|"LogSink.Raw"| B
+    B --> F
+    B --> T
+    B --> E
+    E -->|"Wails Event"| S
+    V -->|"LogService.Query(after, limit)"| B
+    S --> V
+```
+
+**三条必须守住的规则**：
+
+1. **总线必须是进程级单例，且在 `wails.New` 之前建好**：Wails 在构造时就把 logger 固定下来，之后再改 `slog.SetDefault` 对它的系统消息无效。
+2. **`Raw` 不能改一个字节**：Deskflow 的崩溃原因往往就是某行英文原文，格式化/截断都会毁掉线索。
+3. **事件必须合批**：子进程一次启动能吐几十行，逐行广播会让前端每 200ms 触发一次重渲染。
+
 ---
 
 ## 8. 扩展指引（"方便扩展"的具体落点）
@@ -686,6 +782,7 @@ sequenceDiagram
 | **新事件** | `application` 里 Emit + `docs/architecture.md` 事件表 + 前端 `api/index.ts` 的 `EventName` | — |
 | **共享键鼠换后端（如 Synergy/Barrier）** | `infrastructure/link/deskflow/` 换成同签名的 `Core` 实现（`application/linkapp/ports.go` 的接口不变） | domain / application / 前端 |
 | **共享布局支持多机/上下排** | `domain/link/runtime.go` 的 `ServerSpec.Neighbors` 扩成带方位的结构 + `deskflow.HorizontalLinks` 换成通用生成 | domain 的报文与配对逻辑、前端发现列表 |
+| **日志页加筛选/导出/上传** | 筛选在前端 `stores/log.ts`（纯本地过滤）；导出/上传只需 `logApi.query` 多拉一段，后端 `LogBuffer` 已提供 `Since` | Go 侧日志管线 |
 | **加 i18n** | 前端 `lib/i18n`；后端错误码→文案在 `presentation/wailsservice/errors.go` | domain |
 
 **新增模块的判定口诀**：只要它"知道真实世界的一个规则"，进 `domain`；只要它"和外部世界对话"，进 `infrastructure`；只要它"编排步骤"，进 `application`；只要它"给用户看/给前端用"，进 `presentation`。
@@ -698,7 +795,7 @@ sequenceDiagram
 - **context**：所有可能阻塞的端口方法都收 `ctx`；统一起点 4s（写/读），由 `application` 设 deadline。
 - **并发**：`Snapshot` 由 `configapp` 用 `sync.RWMutex` 保护；DDC 读写**串行化**（一个 `sync.Mutex` 在 ddc 实现内，因为 I2C 通道不并发安全）。切换操作加"进行中"标志，第二次点击直接返回"正在切换"。
 - **cgo 边界**：C 只负责"帧拼装 + IOAVService 调用"，**不持有 Go 指针**、不回调 Go、不做内存分配（用调用方传入的 `C.malloc` / 固定 `[]C.uint8_t`）。C 返回错误码，Go 侧翻译。
-- **日志**：`Logger` 端口注入（v1 用标准库 `log/slog` 文本 handler；debug 开关在设置页）。
+- **日志**：`Logger` 端口注入，底层是「终端 + 进程内总线」双写（`logging.Tee`），所以界面上「日志」页看到的就是同一批输出。外部进程（`deskflow-core`）的原文走 `LogSink.Raw`，**不做任何格式化**。后端自己产生、要显示给用户的文案一律用稳定标识（`client_started` / `exit_config` / `fingerprint_invalid` …），由前端 `locales/*` 翻译；只有对端（Deskflow）吐出的英文原文原样透传。
 - **可测试性**：见 §11「测试策略」。一句话规则——**用例层只依赖端口，测试里全用 fake；真实的 DDC 只在真机上跑。**
 
 ---
@@ -722,6 +819,7 @@ sequenceDiagram
 | ADR-013 | Deskflow 的配置文件放在 `<配置目录>/switch-display/deskflow/`，**不写 `~/Library/Deskflow`** | 用户可能自己也在用 Deskflow GUI，共用配置文件会互相覆盖（GUI 会改写 `deskflow.conf`，`cleanSettings()` 还会删它不认识的键）；`-s` 只能改配置路径、改不了 state 路径，所以只隔离配置目录、接受窗口几何等 state 的极小冲突 | 复用 `~/Library/Deskflow`（与用户的 Deskflow GUI 互相破坏） |
 | ADR-014 | 共享状态存**独立的 `link.json`**，不塞进 `config.json` | 设备 ID / 配对记录都是运维态：丢了只是重新配一次，不需要事务性。塞进 `config.json` 就得升 `version` 触发迁移，代价与收益不成比例；独立文件还让 `LinkStore.Load` 可以在损坏时静默回落空快照 | 并入 `config.json`（为一个可丢字段引入配置迁移） |
 | ADR-015 | Deskflow 运行时**随应用内置**（构建期下载+校验+裁剪，二进制不进仓库），而不是要求用户自己安装 | 用户为了共享键鼠先去 GitHub 装一个 Deskflow 再回来点按钮，等于把集成做废；而 57MB(macOS)/38MB(Windows) 的二进制提交进 git 会让仓库不可维护，`go:embed` 又会让每次启动都映射这堆动态库。放 `build/deskflow/<os>/<arch>/`（gitignored）+ 打包期拷进产物，兼顾自包含与仓库轻量 | 要求用户自装（体验断裂）；提交二进制（仓库膨胀）；`go:embed`（启动成本 + 仍需在源码树里放二进制） |
+| ADR-016 | 日志改用**进程内总线**（slog `Tee` 双写到终端与环形缓冲）+ 前端游标增量拉取，而不是把 `slog` 输出改成文件再由前端读文件 | 双击打开的 `.app`/`.exe` 没有终端，共享键鼠的问题几乎全在 `deskflow-core` 的 stderr 里；让前端读日志文件需要额外处理编码（Windows 上不是 UTF-8 就乱码）、滚动、以及「用户还没打开就错过了」的时序问题。总线还能把 Wails 自己的系统消息一起收进来 | 前端直接读 `app.log`（编码/滚动/时序全要自己解）；只写文件让用户去找（违背「让用户少操作」） |
 
 ---
 
@@ -745,6 +843,8 @@ sequenceDiagram
 | `infrastructure/link/deskflow` | INI 键、布局双向性、信任库格式、PEM 段序、子进程启停与退出码 | `#!/bin/sh` 假 core + `t.TempDir()` | 无（不需要真 Deskflow） |
 | `application/linkapp` 联调 | 双 Service 真 UDP 互相发现 + 完整配对握手 + 文件落盘 | `//go:build link_integration`，端口 24981，core 用假脚本 | 本机网络栈（不需要真 Deskflow） |
 | `application/linkapp` 真 core | 真 `deskflow-core` 的 TLS 指纹互认、双向角色落定 | `//go:build deskflow_real`，端口 24983 | 装了 Deskflow 且显示器已唤醒 |
+| `infrastructure/logging` | Seq 单调、增量 Since、环形淘汰与 Dropped、级别解析、`Tee` 双写、200ms 合批、文件滚动 | `t.TempDir()` 真文件 + 假 events | 无 |
+| `application/logapp` | 游标查询、limit 截断、Lost 判定、空/nil 缓冲 | fake `LogBuffer` | 无 |
 | `bootstrap` | 装配完整性、失败快速返回 | `wails.New` 但不 `Run` | 无 |
 
 约定：
@@ -755,7 +855,8 @@ sequenceDiagram
 4. **区域相关的用例要 `t.Setenv`**：托盘文案按 `LC_ALL/LC_MESSAGES/LANG` 兜底，不定住就是环境依赖测试。
 5. 真机集成测试（会真的切屏幕）单独打 tag：`go test ./internal/bootstrap/ -tags manual -run TestSwitchToCurrentPort -v`。
 6. **打包产物里的内置运行时靠 `bundledCoreUnder(dir)` 单独测**：`bundledCore()` 依赖 `os.Executable()` 造不出真实 `.app`，所以定位逻辑拆成可传目录的版本，测试里手搭 `deskflow/` 与 `Resources/deskflow/Contents/MacOS/` 两种布局。
-7. **需要外部二进制的测试只用 tag + 环境变量开启，默认 skip**：`DESKFLOW_CORE=<path> go test -tags deskflow_real ./internal/application/linkapp/ -run TestRealCorePair -v`。不要在测试里写死 `/Applications/...` 路径，否则 CI 上必然失败。
+7. **进程级单例（日志总线）的测试必须用游标而不是假设空缓冲**：`go test -count=2` 时上一条用例写进去的日志还在，`Query(0, 10)` 会拿到多条。
+8. **需要外部二进制的测试只用 tag + 环境变量开启，默认 skip**：`DESKFLOW_CORE=<path> go test -tags deskflow_real ./internal/application/linkapp/ -run TestRealCorePair -v`。不要在测试里写死 `/Applications/...` 路径，否则 CI 上必然失败。
 
 跑法：`go test ./internal/... -cover`、`go vet ./internal/... .`、`gofmt -l internal/ main.go`。
 
@@ -807,3 +908,4 @@ sequenceDiagram
 | 2026-10-27 | **第三步：局域网共享键鼠（Deskflow 集成）**。新增 `domain/link`（设备身份/信令报文/配对记录/运行状态）、`application/linkapp`（发现→配对→启停编排）、`infrastructure/link/discovery`（UDP 24801 广播 + 单播信令 + 对端表）、`infrastructure/link/deskflow`（定位 core / 自签证书与指纹 / INI+布局+信任库 / 子进程生命周期）、`infrastructure/persistence/{linkpaths,linkstore}.go`（独立 `link.json`）、`presentation/wailsservice/linkservice.go`（`LinkService`，7 个方法）、前端 `/share` 页 + `stores/link.ts` + 侧栏入口 + 中英文案；新增 `EventLinkChanged`；新增 ADR-010…ADR-014；§3 目录树、§4 状态列、§5 契约（含 `link.json` 与 Deskflow 文件清单）、§7.4 配对时序图按实际实现更新。调研结论与实施进度见 [deskflow-integration.md](./deskflow-integration.md)。同轮修正：`[log] level=info` 下 DEBUG 行不输出，状态判定改用 INFO 级 `connected to secure socket`/`accepted client connection`；TCP 就绪探测造成的 `ERROR: failed to accept secure socket` 列入 benign 噪音；新增 `-tags deskflow_real` 真 core 联调测试；WARN 不再判死（client 首连失败会自动重试）；`PairResultDTO.Message` / `CoreStatusDTO.Message` / 配对拒绝原因码改为稳定标识由前端 `share.notice.*` / `share.coreMsg.*` / `share.reject.*` 翻译（Deskflow 自身输出的英文 ERROR 行原样透传）；`reuseport` 按平台拆分（Linux 需 x/sys/unix） | 全部层 + docs |
 | 2026-10-27 | **Deskflow 运行时随应用内置**：`build/deskflow/fetch.sh` 按 `sums.txt` 校验 sha256 后从 v1.27.0 release 取运行时并裁剪（macOS 保留 `deskflow-core` + 5 个 Qt framework + `platforms/tls/networkinformation` 插件 + `qt.conf`；Windows 保留 `deskflow-core.exe` + DLL + `plugins/`），产物 `build/deskflow/<os>/<arch>/` 由 `.gitignore` 忽略、不进仓库；`common:deskflow:bundle` 任务做入口，darwin 打包在 `codesign` **之前**拷进 `<App>.app/Contents/Resources/deskflow/`（dev 包同样拷，否则内置路径永远验证不到），Windows 由 NSIS 用 `ARG_WAILS_DESKFLOW_DIR` 装进 `$INSTDIR\deskflow`；`deskflow.Locate()` 新增 `bundledCoreUnder()`，内置路径优先于系统安装版。理由：用户不该为了共享键鼠先去装 Deskflow，而 57MB/38MB 的二进制既不能进 git 也不适合 `go:embed`（每次启动都要映射）。见 [deskflow-integration.md](./deskflow-integration.md) §11 | 构建 + infrastructure/link/deskflow + docs |
 | 2026-10-27 | **Windows 托盘两处修复**：① 右键菜单不弹出 —— 资源管理器在 NOTIFYICON_VERSION_4 下会把 `WM_CONTEXTMENU` 当普通窗口消息直接投给托盘窗口，Wails beta.34 的 `systemtray_windows.go` 只在 `wmUserSystray` 分支处理它，直接投递的那条落到 `DefWindowProc`（左键正常、右键无反应）。`tray/uipi_windows.go` 的 `WndProcInterceptor` 挂在 `WindowsOptions.WndProcInterceptor` 上补住这条，只对父窗口为 `HWND_MESSAGE` 的消息窗口生效；同时 `start` 里显式 `OnRightClick(OpenMenu)`，并用 `ChangeWindowMessageFilter(Ex)` 放行 `WM_USER+1`（提权进程收不到非提权 explorer 的回调）。② 托盘语言不跟随系统 —— `isChinese` 原来只看 `LC_ALL`/`LC_MESSAGES`/`LANG`，Windows 不设这些变量所以永远英文；改为「显式语言 > locale 变量（`C`/`POSIX` 哨兵忽略）> 系统 UI 语言」，系统语言在 `lang_windows.go` 用 `GetUserDefaultUILanguage` 取主语言 ID | presentation/tray + main.go + docs |
+| 2026-10-28 | **第四步：日志页**。新增 `infrastructure/logging`（环形 2000 条总线 + slog handler + `Tee` 双写 + `Raw` 承接子进程原文 + 2MiB 文件滚动）、`application/logapp`（游标增量查询 / Lost 判定 / 来源汇总）、`presentation/wailsservice/logservice.go`（`LogService`，4 个方法）、`application/dto/log.go`；新增 `EventLogAppended`（200ms 合批）；新增端口 `LogBuffer` / `LogSink` 与 `application.LogEntry`；`deskflow.Runtime` 增加 `SetSink`（原始输出旁路到总线，锁外回调避免拖住 `Status()`/`Stop()`）；**日志总线改为进程级单例并在 `wails.New` 之前注入 `wails.Options.Logger`**，使 WebView2/资源服务器等 Wails 系统消息也进日志页；前端 `/logs` 页 + `stores/log.ts` + 侧栏 `ScrollText` 入口 + 中英文案；core 状态说明补充 `exit_other` / `server_not_listening` 两个稳定标识（原来把中文写进后端）。§3 目录树、§4 状态列、§5 契约（`LogBuffer`/`LogSink`/`LogEntry`）、§7.5 日志上行图、§10 ADR-016、§11 测试表与第 7 条约定同步 | 全部层 + docs |

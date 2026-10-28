@@ -5,12 +5,15 @@
 // 2) 需要 mock（例如浏览器里跑 vite dev 不带 Go 后端）时只改一处。
 import * as DisplayService from "@bindings/github.com/znahovo/switch-display/internal/presentation/wailsservice/displayservice.js"
 import * as LinkService from "@bindings/github.com/znahovo/switch-display/internal/presentation/wailsservice/linkservice.js"
+import * as LogService from "@bindings/github.com/znahovo/switch-display/internal/presentation/wailsservice/logservice.js"
 import type {
   CoreStatusDTO,
   DisplayDTO,
   InputDTO,
   LinkSelfDTO,
   LinkStateDTO,
+  LogBatchDTO,
+  LogEntryDTO,
   PairResultDTO,
   PeerDTO,
   PresetDTO,
@@ -28,6 +31,8 @@ export type {
   InputDTO,
   LinkSelfDTO,
   LinkStateDTO,
+  LogBatchDTO,
+  LogEntryDTO,
   PairResultDTO,
   PeerDTO,
   PresetDTO,
@@ -49,6 +54,8 @@ export const EventName = {
   showView: "ui:show-view",
   /** 共享状态 / 对端列表 / core 状态变化：前端重拉 LinkService.State */
   linkChanged: "link:changed",
+  /** 有新日志（后端已按 200ms 合批）：前端按游标增量拉 */
+  logAppended: "log:appended",
 } as const
 
 /** 后端返回的结构化错误（见 internal/presentation/wailsservice/errors.go）。 */
@@ -128,6 +135,35 @@ export const linkApi = {
   stop: (): Promise<PairResultDTO> => LinkService.Stop(),
   unpair: (peerId: string): Promise<PairResultDTO> => LinkService.Unpair(peerId),
   refreshDeskflow: (): Promise<boolean> => LinkService.RefreshDeskflow(),
+}
+
+/**
+ * 日志批次。绑定把 nil 切片标成 null，这里收口成空数组，
+ * 免得每个调用点都写 `?? []`。
+ */
+export type LogBatch = Omit<LogBatchDTO, "entries"> & { entries: LogEntryDTO[] }
+
+/** 日志接口：游标增量拉取。 */
+export const logApi = {
+  /**
+   * 拉取游标之后的日志。
+   *
+   * after 是上次拿到的 latest；首次传 0。返回的 entries 里 latest 是
+   * 缓冲当前最大序号，下一次原样回传即可。
+   */
+  query: async (after: number, limit: number): Promise<LogBatch> => {
+    const batch = await LogService.Query(after, limit)
+    return {
+      ...batch,
+      entries: batch.entries ?? [],
+    }
+  },
+  /** 出现过的来源列表，用于筛选下拉。 */
+  sources: async (): Promise<string[]> => (await LogService.Sources()) ?? [],
+  /** 清空界面上的日志（磁盘文件保留）。 */
+  clear: (): Promise<boolean> => LogService.Clear(),
+  /** 日志文件路径，空表示只在内存里。 */
+  filePath: (): Promise<string> => LogService.FilePath(),
 }
 
 /** 订阅后端事件；返回取消订阅函数。 */

@@ -3,7 +3,9 @@
 
 import * as DisplayService from "./displayservice.js";
 import * as LinkService from "./linkservice.js";
+import * as LogService from "./logservice.js";
 export {
     DisplayService,
-    LinkService
+    LinkService,
+    LogService
 };

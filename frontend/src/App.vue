@@ -16,6 +16,7 @@ import {
   LayoutGrid,
   ListVideo,
   Network,
+  ScrollText,
   Settings as SettingsIcon,
 } from "lucide-vue-next"
 import { detectLocale, setLocale, type Locale } from "@/locales"
@@ -35,6 +36,7 @@ const navItems = [
   { path: "/", key: "nav.switcher", icon: LayoutGrid },
   { path: "/sources", key: "nav.sources", icon: ListVideo },
   { path: "/share", key: "nav.share", icon: Network },
+  { path: "/logs", key: "nav.logs", icon: ScrollText },
   { path: "/settings", key: "nav.settings", icon: SettingsIcon },
 ] as const
 

@@ -52,3 +52,18 @@ func DefaultDeskflowDir() (string, error) {
 	}
 	return filepath.Join(dir, DeskflowDirName), nil
 }
+
+// LogFileName 是应用日志文件名。
+//
+// 与 link.json 放在同一目录：用户要反馈问题时，只需给出这一个目录，
+// 配置、身份、日志都在里面。
+const LogFileName = "app.log"
+
+// DefaultLogPath 返回日志落盘路径。
+func DefaultLogPath() (string, error) {
+	dir, err := AppDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, LogFileName), nil
+}

@@ -21,6 +21,10 @@ func main() {
 	app := wails.New(wails.Options{
 		Name:        "Switch Display",
 		Description: "Switch monitor input source with one click",
+		// Wails 在构造时就把 logger 固定下来，之后改 slog.SetDefault 无效；
+		// 所以必须在 wails.New 之前拿到底层的 logger，把 WebView2 /
+		// 资源服务器这些系统消息也送进界面上的日志页。
+		Logger: bootstrap.SystemLogger(),
 		Assets: wails.AssetOptions{
 			Handler: wails.AssetFileServerFS(assets),
 		},
@@ -46,6 +50,7 @@ func main() {
 	}
 	app.RegisterService(wails.NewService(wire.DisplayService))
 	app.RegisterService(wails.NewService(wire.LinkService))
+	app.RegisterService(wails.NewService(wire.LogService))
 
 	win := app.Window.NewWithOptions(wails.WebviewWindowOptions{
 		Name:   "main",

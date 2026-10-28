@@ -9,6 +9,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"sync"
 
 	wails "github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -16,11 +18,13 @@ import (
 	"github.com/znahovo/switch-display/internal/application/configapp"
 	"github.com/znahovo/switch-display/internal/application/displayapp"
 	"github.com/znahovo/switch-display/internal/application/linkapp"
+	"github.com/znahovo/switch-display/internal/application/logapp"
 	"github.com/znahovo/switch-display/internal/application/switchapp"
 	"github.com/znahovo/switch-display/internal/domain/switching"
 	"github.com/znahovo/switch-display/internal/infrastructure/ddc"
 	"github.com/znahovo/switch-display/internal/infrastructure/link/deskflow"
 	"github.com/znahovo/switch-display/internal/infrastructure/link/discovery"
+	"github.com/znahovo/switch-display/internal/infrastructure/logging"
 	"github.com/znahovo/switch-display/internal/infrastructure/persistence"
 	"github.com/znahovo/switch-display/internal/infrastructure/platform"
 	"github.com/znahovo/switch-display/internal/presentation/tray"
@@ -31,6 +35,7 @@ import (
 type App struct {
 	DisplayService *wailsservice.DisplayService
 	LinkService    *wailsservice.LinkService
+	LogService     *wailsservice.LogService
 	Displays       *displayapp.Service
 	Config         *configapp.Service
 	Switcher       *switchapp.Service
@@ -47,6 +52,7 @@ type App struct {
 	events  *platform.Events
 	watcher *displayapp.Watcher
 	log     *platform.Logger
+	logs    *logging.Bus
 }
 
 // Build 装配整个应用。
@@ -54,10 +60,17 @@ type App struct {
 // 顺序是有意义的：先建基础设施（DDC、存储、时钟、日志），再建用例，
 // 最后建表现层——因为表现层依赖用例，用例依赖基础设施。
 func Build(wailsApp *wails.App) (*App, error) {
-	log := platform.NewLogger(slog.Default())
 	clock := platform.NewClock()
 	events := platform.NewEvents(wailsApp)
 	hotkeys := platform.NewHotkeys(wailsApp)
+
+	// ⓪ 日志总线：界面上的「日志」页是用户唯一能看到的地方
+	// （双击打开的 .app/.exe 没有终端），而共享键鼠的问题往往只体现在
+	// deskflow-core 的输出里。总线已在 wails.New 之前由 main.go 建好，
+	// 这里只是把事件发布者接上（那时它还不存在）。
+	logs := SystemBus()
+	logs.SetEvents(events)
+	log := platform.NewLogger(SystemLogger())
 
 	// ① 基础设施：真正的 DDC 端口 + JSON 存储。
 	port := ddc.New()
@@ -99,8 +112,9 @@ func Build(wailsApp *wails.App) (*App, error) {
 		return nil, fmt.Errorf("init deskflow dir: %w", err)
 	}
 	coreEngine := deskflow.NewEngine(deskflow.EngineDeps{
-		Dir: deskflowDir,
-		Log: log,
+		Dir:  deskflowDir,
+		Log:  log,
+		Sink: logs,
 	})
 	transport := discovery.New(discovery.Deps{Log: log})
 	linkSvc := linkapp.New(linkapp.Deps{
@@ -110,6 +124,9 @@ func Build(wailsApp *wails.App) (*App, error) {
 		Events:    events,
 		Log:       log,
 	})
+
+	// ③¾ 日志用例：只读缓冲，向界面提供游标查询。
+	logsSvc := logapp.New(logapp.Deps{Buffer: logs})
 
 	// ⑤ 菜单栏：托盘是配置的投影，把它放最后建，这样它拿到的依赖都已就绪。
 	// 真正的 Start（建图标 + 首次渲染）在 App.Start 里做，那时配置已经读进来。
@@ -133,6 +150,7 @@ func Build(wailsApp *wails.App) (*App, error) {
 		hotkeys:  hotkeys,
 		events:   events,
 		log:      log,
+		logs:     logs,
 	}
 	svc := wailsservice.New(wailsservice.Deps{
 		Displays:  displays,
@@ -145,6 +163,7 @@ func Build(wailsApp *wails.App) (*App, error) {
 		Link:      linkSvc,
 		OnStartup: app.startLink,
 	})
+	app.LogService = wailsservice.NewLogService(wailsservice.LogDeps{Logs: logsSvc})
 
 	hotkeys.OnFire(func(sourceID string) {
 		go func() {
@@ -156,6 +175,58 @@ func Build(wailsApp *wails.App) (*App, error) {
 
 	return app, nil
 }
+
+// 全进程共用的日志总线。
+//
+// 为什么是包级单例而不是每次 Build 新建一份：Wails 在 wails.New() 时就把
+// 自己的 logger 固定下来了，之后改 slog.SetDefault 对它无效。要让
+// WebView2 / 资源服务器这些系统消息也进日志页，必须把这个 logger 在
+// wails.New 之前交给 Wails——而那时 Build 还没跑。单例是唯一能让
+// main.go 和 Build 共用同一条总线、又不把总线细节泄漏给 main.go 的方式。
+var (
+	systemOnce   sync.Once
+	systemLogs   *logging.Bus
+	systemLogger *slog.Logger
+)
+
+// SystemLogger 返回「终端 + 界面」双写的 slog.Logger。
+//
+// main.go 必须在 wails.New 之前调用它。它同时被装成 slog 的默认 logger，
+// 于是所有 slog.Default() 调用点（含第三方库）都会进日志页。
+func SystemLogger() *slog.Logger {
+	initSystemLogs()
+	return systemLogger
+}
+
+// SystemBus 返回与 SystemLogger 共用的日志总线。
+func SystemBus() *logging.Bus {
+	initSystemLogs()
+	return systemLogs
+}
+
+// initSystemLogs 构造总线，幂等。
+func initSystemLogs() {
+	systemOnce.Do(func() {
+		path, pathErr := persistence.DefaultLogPath()
+		if pathErr != nil {
+			// 落盘路径取不到时退化成「只在内存里」：界面里的日志仍然可用，
+			// 不能让一个打不开的目录把应用拖死。
+			path = ""
+			fmt.Fprintf(os.Stderr, "log file unavailable: %v\n", pathErr)
+		}
+		systemLogs = logging.New(logging.Deps{FilePath: path})
+		if msg := systemLogs.FileError(); msg != "" {
+			fmt.Fprintf(os.Stderr, "log file unavailable: %s\n", msg)
+		}
+
+		term := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})
+		systemLogger = slog.New(logging.Tee(term, systemLogs.Handler(sourceApp, slog.LevelDebug)))
+		slog.SetDefault(systemLogger)
+	})
+}
+
+// sourceApp 是本进程日志在界面上的来源标签。
+const sourceApp = "app"
 
 // Start 在应用启动后执行一次性的初始化：读配置、枚举显示器、启动热插拔轮询。
 //

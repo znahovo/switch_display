@@ -146,6 +146,89 @@ export interface LinkStateDTO {
 }
 
 /**
+ * LogBatchDTO 是一次增量查询的结果。
+ */
+export interface LogBatchDTO {
+    /**
+     * Entries 是本次返回的条目（按序号升序）。
+     */
+    "entries": LogEntryDTO[] | null;
+
+    /**
+     * Latest 是缓冲当前的最大序号；前端保存它作为下次的游标。
+     */
+    "latest": number;
+
+    /**
+     * Oldest 是缓冲里还剩的最小序号（空缓冲为 0）。
+     */
+    "oldest": number;
+
+    /**
+     * Dropped 是因容量上限被丢弃的累计条数。
+     */
+    "dropped": number;
+
+    /**
+     * Capacity 是缓冲容量（拿去算「还剩多少」）。
+     */
+    "capacity": number;
+
+    /**
+     * FilePath 是日志落盘路径；空表示不落盘。
+     */
+    "filePath": string;
+
+    /**
+     * FileError 是落盘错误说明；空表示正常。
+     */
+    "fileError"?: string;
+
+    /**
+     * Lost 表示本次返回与前端上次游标之间已有缺失。
+     */
+    "lost"?: boolean;
+}
+
+/**
+ * LogEntryDTO 是一条日志。
+ */
+export interface LogEntryDTO {
+    /**
+     * Seq 是单调递增序号，前端按它做增量拉取。
+     */
+    "seq": number;
+
+    /**
+     * Time 是写入时间，格式 `2006-01-02T15:04:05.000`（本地时间，不带时区）。
+     * 
+     * 不带时区的原因：日志是给人看的，用户只关心自己机器上的钟点；
+     * 时区信息在日志页上是噪音。
+     */
+    "time": string;
+
+    /**
+     * Level 是 debug/info/warn/error/raw。
+     */
+    "level": string;
+
+    /**
+     * Source 是来源（app / deskflow / …）。
+     */
+    "source": string;
+
+    /**
+     * Message 是正文。
+     */
+    "message": string;
+
+    /**
+     * Fields 是 kv 渲染结果，形如 `pid=123 mode=server`。
+     */
+    "fields"?: string;
+}
+
+/**
  * PairResultDTO 是一次配对尝试的结果。
  */
 export interface PairResultDTO {

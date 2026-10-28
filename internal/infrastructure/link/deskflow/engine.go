@@ -20,6 +20,7 @@ type Engine struct {
 	log    Logger
 
 	runtime *Runtime
+	sink    Sink
 	port    int
 }
 
@@ -33,6 +34,8 @@ type EngineDeps struct {
 	Port int
 	// Log 是日志端口。
 	Log Logger
+	// Sink 接收 core 原始输出（可选）。bootstrap 在构造后注入。
+	Sink Sink
 }
 
 // NewEngine 构造 Engine。此时还不校验可执行文件是否存在（首次打开共享页
@@ -45,6 +48,7 @@ func NewEngine(d EngineDeps) *Engine {
 		dir:    d.Dir,
 		finder: NewFinder(d.BinaryPath),
 		log:    d.Log,
+		sink:   d.Sink,
 		port:   d.Port,
 	}
 }
@@ -196,6 +200,7 @@ func (e *Engine) ensureRuntime(binary string) {
 		return
 	}
 	e.runtime = NewRuntime(binary, e.log)
+	e.runtime.SetSink(e.sink)
 }
 
 // HostFor 从发现的来源地址里取出可用于 client 连接的 IP。
